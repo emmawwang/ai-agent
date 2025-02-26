@@ -13,6 +13,7 @@ logger = logging.getLogger("discord")
 
 # Load the environment variables
 load_dotenv()
+load_dotenv(dotenv_path=".env", override=True)  # change
 
 # Create the bot with all intents
 # The message content and members intent must be enabled in the Discord Developer Portal for the bot to work.
@@ -73,7 +74,6 @@ async def ping(ctx, *, arg=None):
         await ctx.send("Pong!")
     else:
         await ctx.send(f"Pong! Your argument was {arg}")
-
 
 # Start the bot, connecting it to the gateway
 bot.run(token)
