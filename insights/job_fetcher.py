@@ -10,56 +10,62 @@ load_dotenv()
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
 def fetch_job_from_url(url):
-    """Fetch job description from a URL"""
+    """
+    Simple job fetcher that gets job description from a URL.
+    Returns the text description with minimal processing.
+    """
     try:
-        # First try with Perplexity API if available
         if PERPLEXITY_API_KEY:
-            try:
-                return fetch_with_perplexity(url)
-            except Exception as e:
-                print(f"Perplexity fetch failed: {e}. Trying backup method...")
-        
-        # Backup method using requests
-        print("Using direct request to fetch job posting...")
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, verify=False, timeout=30)
-        response.raise_for_status()
-        
-        # Extract main content from HTML
+            headers = {
+                "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "sonar",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"Extract the job description from this URL: {url}. Return ONLY the job description text, company name, and required skills. No commentary or formatting."
+                    }
+                ],
+                "temperature": 0.1
+            }
+            
+            response = requests.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=20
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                job_description = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return job_description
+            else:
+                raise Exception(f"API error: {response.status_code}")
+            
+        # Fallback to direct request
+        response = requests.get(url, timeout=10)
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Remove script and style elements
+        # Extract text
         for script in soup(["script", "style"]):
             script.extract()
+        text = soup.get_text()
         
-        # Try to find job description container (common patterns)
-        job_container = None
-        for selector in ['.job-description', '.description', '[data-job-description]', 
-                          '#job-details', '.job-details', '[class*="job"][class*="description"]']:
-            container = soup.select_one(selector)
-            if container:
-                job_container = container
-                break
-        
-        # If no specific container found, use main content
-        if not job_container:
-            job_container = soup.find('main') or soup.find('body')
-        
-        text = job_container.get_text(separator='\n')
         # Clean up text
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return '\n'.join(lines)
         
-    except requests.RequestException as e:
-        raise Exception(f"Failed to fetch URL: {e}")
     except Exception as e:
-        raise Exception(f"Error processing job page: {e}")
+        print(f"Error fetching job: {e}")
+        return ""
 
 def fetch_with_perplexity(url):
-    """Fetch job description from a URL using Perplexity API"""
+    """Fetch job description from a URL using Perplexity API - improved for better content extraction"""
     if not PERPLEXITY_API_KEY:
         raise ValueError("Perplexity API key not found. Check your .env file.")
     
@@ -70,17 +76,17 @@ def fetch_with_perplexity(url):
         "Content-Type": "application/json"
     }
     
-    # Improved prompt to focus on job responsibilities and skills
+    # Much more specific prompt to avoid getting templates
     payload = {
         "model": "sonar",  # Using the base sonar model which has web browsing capability
         "messages": [
             {
                 "role": "system",
-                "content": "You are a specialized job analyzer focusing on extracting specific components from job postings. Your primary task is to extract ONLY the following sections from the job posting at the provided URL:\n\n1. Job responsibilities and tasks (what the person will actually do)\n2. Required skills and qualifications\n3. Job title and role description\n\nIgnore metadata like location, salary, company benefits, application procedures, etc. Format the output as clear sections with bullet points for responsibilities and skills. Focus on actionable job tasks that describe the actual work performed."
+                "content": "You are a specialized job data extractor. Extract ONLY the ACTUAL content from job listings - no templates, no placeholders, no '[Insert X]' text. If you can't find specific information, leave it out rather than using placeholders. Focus on concrete job responsibilities, skills, and company information actually stated in the posting."
             },
             {
                 "role": "user",
-                "content": f"Extract only the job responsibilities, tasks, required skills, and role description from this job posting: {url}"
+                "content": f"Extract ONLY the concrete, specific job details from this URL: {url}\n\nPlease include:\n1. The EXACT company name (not the job board name like 'Ashbyhq' or 'Lever')\n2. The actual responsibilities listed (not as placeholders)\n3. The specific skills required\n\nIf you can't find something, simply omit it rather than using placeholders."
             }
         ],
         "max_tokens": 2048,
@@ -197,3 +203,40 @@ def clean_job_description(text):
             filtered_lines.append(line)
     
     return '\n'.join(filtered_lines) 
+
+def query_perplexity(query):
+    """Query Perplexity API with a simple question and return the response"""
+    try:
+        if PERPLEXITY_API_KEY:
+            headers = {
+                "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "sonar-small",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": query
+                    }
+                ],
+                "temperature": 0.0
+            }
+            
+            response = requests.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("choices", [{}])[0].get("message", {}).get("content", "Unknown")
+            else:
+                return "Unknown"
+        else:
+            return "Unknown"
+    except:
+        return "Unknown" 
