@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from agent import MistralAgent
+from insights.job_analyzer import analyze_job_automation
+from insights.config import ONET_TASK_MAPPINGS_FILE, ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE
 
 PREFIX = "!"
 
@@ -199,8 +201,108 @@ async def on_message(message: discord.Message):
 @bot.command(name="help", help="Shows the job tracker help message")
 async def help_command(ctx):
     """Send the job tracker help information."""
-    await ctx.send(BOT_HELP_MESSAGE)
+    # Update the help message to include job analysis
+    help_message = BOT_HELP_MESSAGE + """
 
+🤖 **Job Analysis**
+`!analyze [job description or URL]` - Analyze a job posting for automation risk
+`!job [job description or URL]` - Same as analyze command
+  • Example: `!analyze https://example.com/job-posting`
+  • Example: `!job [paste job description here]`
+"""
+    await ctx.send(help_message)
+
+
+# Add a new function to handle job analyzer commands
+@bot.command(name="analyze", help="Analyze job automation and career growth potential")
+async def analyze_command(ctx, *, content=""):
+    """Analyze a job posting for automation risk and career insights."""
+    if not content:
+        await ctx.send("Please provide a job description or URL to analyze. Example: `!analyze https://example.com/job` or `!analyze [paste job description here]`")
+        return
+        
+    await handle_job_analysis(ctx, content)
+
+# Also add an alternate command name for the same function
+@bot.command(name="job", help="Analyze job automation and career growth potential")
+async def job_command(ctx, *, content=""):
+    """Alias for the analyze command."""
+    if not content:
+        await ctx.send("Please provide a job description or URL to analyze. Example: `!job https://example.com/job` or `!job [paste job description here]`")
+        return
+        
+    await handle_job_analysis(ctx, content)
+
+# Update the handle_job_analysis to work with ctx instead of message
+async def handle_job_analysis(ctx, content):
+    """
+    Process job analysis requests
+    
+    Args:
+        ctx: The Discord context object
+        content: The content of the message
+    """
+    # Check if the content is a URL or text
+    is_url = content.strip().startswith("http://") or content.strip().startswith("https://")
+    
+    # Send initial response
+    await ctx.send("Analyzing job information... this may take a moment.")
+    
+    try:
+        # Run the job analyzer
+        results = analyze_job_automation(content, ONET_TASK_MAPPINGS_FILE)
+        
+        # Calculate risk level description
+        automation_risk = results.get('Overall_Automation_Risk', 0)
+        if automation_risk < 0.3:
+            risk_level = "LOW"
+            risk_desc = "This job has low automation risk. Most tasks require human judgment and creativity."
+        elif automation_risk < 0.6:
+            risk_level = "MODERATE" 
+            risk_desc = "This job has moderate automation risk. Some tasks could be automated, but human oversight remains important."
+        else:
+            risk_level = "HIGH"
+            risk_desc = "This job has high automation risk. Many tasks may be automated in the coming years."
+        
+        # Format the response
+        response = f"**AUTOMATION RISK ASSESSMENT: {risk_level} ({automation_risk:.2f})**\n"
+        response += f"{risk_desc}\n\n"
+        
+        # Add career growth info
+        career = results.get('Career_Growth_Potential', {})
+        response += f"**Career Growth Potential: {career.get('level', 'Unknown')}**\n"
+        response += f"• {career.get('description', '')}\n"
+        response += f"• Outlook: {career.get('outlook', '')}\n"
+        response += f"• Skills: {career.get('skill_demand', '')}\n"
+        response += f"• Recommendation: {career.get('recommendations', '')}\n\n"
+        
+        # Add industry stability
+        industry = results.get('Industry_Stability', {})
+        response += f"**Industry: {results.get('Industry', 'Unknown')}**\n"
+        response += f"• Status: {industry.get('status', 'Unknown')}\n"
+        response += f"• Trend: {industry.get('trend', '')}\n"
+        response += f"• Disruption Risk: {industry.get('disruption_risk', '')}\n"
+        
+        # Add matched tasks (limited to keep response reasonable)
+        if 'Matched_Tasks' in results and results['Matched_Tasks']:
+            response += "\n**Job Tasks Analysis:**\n"
+            for i, task in enumerate(results['Matched_Tasks'][:3]):  # Limit to 3 tasks
+                emoji = "🟢" if task['automation_pct'] < 0.3 else "🟠" if task['automation_pct'] < 0.6 else "🔴"
+                response += f"{i+1}. {emoji} '{task['job_task'][:80]}...'\n"
+                response += f"   → Automation: {task['automation_pct']*100:.1f}%\n"
+        
+        # Send the response (potentially breaking into chunks if too long)
+        if len(response) > 2000:
+            # Split into multiple messages if too long for Discord
+            chunks = [response[i:i+1900] for i in range(0, len(response), 1900)]
+            for chunk in chunks:
+                await ctx.send(chunk)
+        else:
+            await ctx.send(response)
+            
+    except Exception as e:
+        await ctx.send(f"Error analyzing job: {str(e)}")
+        logger.error(f"Job analysis error: {e}")
 
 # Start the bot, connecting it to the gateway
 bot.run(token)

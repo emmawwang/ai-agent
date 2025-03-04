@@ -1,0 +1,33 @@
+{
+    "patterns": [
+        "\u2022\\s*(.*?)(?=\u2022|\\n\\n|\\n[0-9\u2022]|\\Z)",
+        "(?<!\\S)(?<!\\d)(?:\\d+\\.|\\d+\\))\\s*(.*?)(?=\\n\\n|\\n(?:\\d+\\.|\\d+\\))|\\Z)",
+        "(?<=\\n)(?!-|-\\s|\u2022|\\s*\\d+\\.|\\s*\\d+\\))([A-Z][^.!?\\n]*(?:[.!?]+|(?=\\n)))"
+    ],
+    "min_length": 15,
+    "excluded_patterns": [
+        "^(?:location|salary|type|posted|apply|degree):"
+    ],
+    "action_verbs": [
+        "develop",
+        "create",
+        "manage",
+        "design",
+        "implement",
+        "build",
+        "analyze",
+        "research",
+        "write",
+        "communicate",
+        "lead",
+        "collaborate",
+        "coordinate",
+        "maintain",
+        "ensure",
+        "provide",
+        "support",
+        "work",
+        "handle",
+        "prepare"
+    ]
+}

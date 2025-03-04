@@ -16,658 +16,236 @@ load_dotenv()
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-def analyze_job_automation(job_input, csv_path=None, similarity_threshold=0.15):
-    """
-    Analyze a job description for automation risk using a CSV of tasks with automation scores.
-    
-    Args:
-        job_input: Either a job description string or a URL to a job posting
-        csv_path: Path to the CSV file with automation data
-        similarity_threshold: Threshold for task matching
-        
-    Returns:
-        Dictionary containing analysis results
-    """
-    # Use the default ONET task mappings if no path provided
-    if csv_path is None:
-        csv_path = ONET_TASK_MAPPINGS_FILE
-        
-    # Check if CSV file exists
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
-    
-    # Variable to store the original URL if provided
-    job_url = None
-    
-    # If job_input is a URL, fetch the job description
-    if isinstance(job_input, str) and (job_input.startswith("http://") or job_input.startswith("https://")):
-        job_url = job_input
-        try:
-            job_description = fetch_job_from_url(job_input)
-            # Also fetch company information in parallel
-            company_info = get_company_information(job_url)
-        except Exception as e:
-            print(f"Error fetching job description from URL: {e}")
-            print("Please provide the job description directly.")
-            return {
-                "error": f"Failed to fetch job description from URL: {str(e)}",
-                "Overall_Automation_Risk": 0.0
-            }
-    else:
-        job_description = job_input
-        company_info = None
-    
-    # Load CSV file
-    df = pd.read_csv(csv_path)
-    print(f"Loaded {len(df)} tasks from {csv_path}")
-    
-    # Extract tasks from job description
-    job_tasks = extract_tasks(job_description)
-    print(f"Extracted {len(job_tasks)} tasks from job description")
-    
-    # Detect industry from job description
-    industry = detect_industry(job_description)
-    print(f"Detected industry: {industry}")
-    
-    # Find matching tasks in dataset
-    matched_tasks = match_tasks_improved(job_tasks, df, similarity_threshold)
-    print(f"Found {len(matched_tasks)} matching tasks with threshold {similarity_threshold}")
-    
-    if not matched_tasks:
-        print("Warning: No matching tasks found in dataset")
-        return {
-            "error": "No matching tasks found",
-            "Industry": industry,  # Still include the detected industry
-            "Overall_Automation_Risk": 0.0,
-            "Company_Info": company_info,
-            "Career_Growth_Potential": get_career_insights_from_perplexity(company_info, industry),
-            "Industry_Stability": get_fallback_industry_data(0.3, industry)["industry_stability"]
-        }
-    
-    # Calculate overall risk (weighted by similarity and confidence)
-    weights = [t['match_score'] for t in matched_tasks]
-    risks = [t['automation_pct'] for t in matched_tasks]
-    overall_risk = np.average(risks, weights=weights)
-    
-    # Get industry stability data
-    if company_info:
-        # Use Perplexity API to get more accurate career growth data
-        career_growth = get_career_insights_from_perplexity(company_info, industry)
-        industry_stability = get_fallback_industry_data(overall_risk, industry)["industry_stability"]
-    else:
-        # Fall back to general industry data
-        industry_data = get_fallback_industry_data(overall_risk, industry)
-        career_growth = industry_data["career_growth"]
-        industry_stability = industry_data["industry_stability"]
-    
-    return {
-        "Overall_Automation_Risk": overall_risk,
-        "Industry": industry,
-        "Company_Info": company_info,
-        "Career_Growth_Potential": career_growth,
-        "Industry_Stability": industry_stability,
-        "Matched_Tasks": matched_tasks
-    }
-
-def match_tasks_improved(job_tasks, task_data, similarity_threshold=0.05):
-    """Match job tasks to dataset tasks with improved accuracy and better fallbacks"""
-    # Ensure task_data is loaded and not empty
-    if task_data.empty:
-        raise ValueError("Task data is empty")
-    
-    # Debug print column names
-    print(f"CSV columns: {task_data.columns.tolist()}")
-    
-    # First, try to auto-detect columns based on common naming patterns
-    task_col = None
-    pct_col = None
-    
-    # Look for task name column
-    task_name_candidates = ['task_name', 'task description', 'task_statement', 'statement', 'task', 'description']
-    for col in task_data.columns:
-        if col.lower() in task_name_candidates:
-            task_col = col
-            print(f"Using '{task_col}' as task description column")
-            break
-    
-    if task_col is None:
-        # Fall back to first column with "task" in its name
-        possible_task_cols = [col for col in task_data.columns if 'task' in col.lower()]
-        if possible_task_cols:
-            task_col = possible_task_cols[0]
-            print(f"Using '{task_col}' as task description column")
-        else:
-            # Last resort - use the first string column that's not too short
-            for col in task_data.columns:
-                if task_data[col].dtype == 'object':
-                    # Sample the data to see if it looks like task descriptions
-                    sample = task_data[col].head(5).astype(str)
-                    if sample.str.len().mean() > 15:  # Reasonable task descriptions are longer than 15 chars
-                        task_col = col
-                        print(f"Using '{task_col}' as task description column (auto-detected)")
-                        break
-            
-            if task_col is None:
-                raise ValueError("Could not auto-detect task description column")
-    
-    # Look for automation percentage column
-    pct_candidates = ['pct', 'automation', 'probability', 'risk', 'auto_risk', 'probability_computerization']
-    for col in task_data.columns:
-        if col.lower() in pct_candidates or any(c in col.lower() for c in pct_candidates):
-            sample = task_data[col].head(5)
-            # Check if values look like percentages or decimals between 0-1
-            try:
-                sample = pd.to_numeric(sample, errors='coerce')
-                if not sample.isna().all():
-                    pct_col = col
-                    print(f"Using '{pct_col}' as automation percentage column")
-                    break
-            except:
-                pass
-    
-    if pct_col is None:
-        # Last resort - try to find a numeric column with values between 0-1 or 0-100
-        for col in task_data.columns:
-            try:
-                if task_data[col].dtype in ['float64', 'float32', 'int64', 'int32']:
-                    col_min = task_data[col].min()
-                    col_max = task_data[col].max()
-                    # Check if it's in range 0-1 or 0-100
-                    if (0 <= col_min <= 1 and 0 <= col_max <= 1) or (0 <= col_min <= 100 and 0 <= col_max <= 100):
-                        pct_col = col
-                        print(f"Using '{pct_col}' as automation percentage column (auto-detected)")
-                        break
-            except:
-                pass
-        
-        if pct_col is None:
-            raise ValueError("Could not auto-detect automation percentage column")
-    
-    # Sample the data for debugging
-    print("\nSample task data:")
-    for i in range(min(3, len(task_data))):
-        try:
-            task_text = task_data.iloc[i][task_col]
-            pct_value = task_data.iloc[i][pct_col]
-            print(f"  {i+1}. Task: '{task_text[:70]}...' - Automation: {pct_value}")
-        except:
-            print(f"  Error displaying sample {i}")
-    
-    # Normalize and clean job tasks
-    job_tasks_clean = [preprocess_text(task) for task in job_tasks if task and isinstance(task, str)]
-    
-    # Debug print tasks from job description
-    print("\nTasks from job description:")
-    for i, task in enumerate(job_tasks):
-        print(f"  {i+1}. {task[:70]}..." if len(task) > 70 else f"  {i+1}. {task}")
-    
-    # If no job tasks were found after preprocessing, try splitting more aggressively
-    if not job_tasks_clean:
-        print("No tasks found after preprocessing, trying alternative extraction...")
-        # Try to extract tasks from full text
-        full_text = " ".join([t for t in job_tasks if isinstance(t, str)])
-        
-        # Extract sentences that look like tasks
-        sentences = re.split(r'(?<=[.!?])\s+', full_text)
-        job_tasks_clean = [
-            preprocess_text(s) for s in sentences 
-            if len(s.strip()) > 20 and re.search(r'\b(?:manage|develop|create|analyze|implement|design|organize|lead|conduct|ensure|provide|maintain|support|coordinate|build|prepare|research|evaluate|perform|work|communicate|collaborate)\b', s.lower())
-        ]
-        
-        if job_tasks_clean:
-            print(f"Extracted {len(job_tasks_clean)} tasks using alternative extraction")
-            # Print the extracted tasks
-            for i, task in enumerate(job_tasks_clean):
-                print(f"  {i+1}. {task[:70]}..." if len(task) > 70 else f"  {i+1}. {task}")
-    
-    if not job_tasks_clean:
-        print("WARNING: Could not extract any tasks from job description")
-        # Create a generic task based on the entire description
-        job_description_text = " ".join([t for t in job_tasks if isinstance(t, str)])
-        job_tasks_clean = [preprocess_text(job_description_text[:500])]  # Use first 500 chars
-        print(f"Using generic task: '{job_tasks_clean[0][:70]}...'")
-    
-    # Handle potential NaN values in dataset tasks
-    dataset_tasks = task_data[task_col].fillna("").astype(str).apply(preprocess_text)
-    
-    # Provide more information about the dataset
-    print(f"\nDataset contains {len(dataset_tasks)} tasks for matching")
-    
+def analyze_job_automation(job_posting_url, csv_path=None, similarity_threshold=0.3):
+    """Analyze job automation risk based on Claude usage patterns from a job posting URL"""
     try:
-        # More flexible vectorization 
-        vectorizer = TfidfVectorizer(
-            stop_words='english', 
-            ngram_range=(1, 2), 
-            min_df=1, 
-            max_df=0.95,
-            lowercase=True,
-            strip_accents='unicode'
+        # Use existing job_fetcher functionality
+        job_description = fetch_job_from_url(job_posting_url)
+        
+        if not job_description:
+            return {"error": f"Failed to extract job description from URL: {job_posting_url}"}
+            
+        # Load task data
+        task_data = load_task_data(csv_path)
+        if task_data.empty:
+            return {"error": "Failed to load task data"}
+
+        # Extract tasks from job description
+        job_tasks = extract_tasks(job_description)
+        if not job_tasks:
+            job_tasks = [job_description]  # Use full description if no tasks extracted
+            
+        # Detect industry
+        industry = detect_industry(job_description)
+        
+        # Find matching tasks and their Claude usage
+        matched_tasks = find_matching_tasks(job_tasks, task_data, similarity_threshold)
+        
+        # Identify high-usage tasks (most likely to be automated)
+        high_usage_tasks = []
+        medium_usage_tasks = []
+        low_usage_tasks = []
+        
+        # Define usage thresholds
+        HIGH_USAGE_THRESHOLD = 0.01681  # Top 25%
+        LOW_USAGE_THRESHOLD = 0.00326   # Bottom 25%
+        
+        # Categorize tasks by usage
+        for task in matched_tasks:
+            usage = task.get('claude_usage_pct', 0.01)
+            if usage >= HIGH_USAGE_THRESHOLD:
+                high_usage_tasks.append(task)
+            elif usage <= LOW_USAGE_THRESHOLD:
+                low_usage_tasks.append(task)
+            else:
+                medium_usage_tasks.append(task)
+        
+        # Calculate overall risk based on proportion of high-usage tasks
+        if matched_tasks:
+            high_usage_proportion = len(high_usage_tasks) / len(matched_tasks)
+            # Scale to risk score (0.1 to 0.9)
+            base_risk = 0.1 + (high_usage_proportion * 0.8)
+        else:
+            base_risk = 0.5  # Default risk
+        
+        # Get industry growth rate
+        growth_rate = parse_growth_rate(get_industry_growth_rate(industry))
+        
+        # Adjust risk based on industry growth (higher growth = lower risk)
+        growth_adjustment = min(0.2, max(-0.2, (growth_rate - 4.0) / 20.0))
+        adjusted_risk = min(0.9, max(0.1, base_risk - growth_adjustment))
+        
+        # Generate reasoning
+        reasoning = generate_simple_reasoning(
+            high_usage_tasks, 
+            medium_usage_tasks,
+            low_usage_tasks,
+            growth_rate,
+            industry
         )
         
-        # Combine all tasks
-        all_tasks = job_tasks_clean + dataset_tasks.tolist()
-        
-        # Check for empty tasks
-        all_tasks = [task if task.strip() else "empty task placeholder" for task in all_tasks]
-        
-        tfidf_matrix = vectorizer.fit_transform(all_tasks)
-        
-        # Print some statistics
-        print(f"Vectorizer vocabulary size: {len(vectorizer.vocabulary_)}")
-        print(f"Top features: {list(vectorizer.vocabulary_.keys())[:10]}")
-        
-    except ValueError as e:
-        print(f"Error in vectorization: {e}")
-        # Fallback to simpler vectorization
-        print("Falling back to simpler vectorization")
-        vectorizer = TfidfVectorizer(stop_words='english')
-        all_tasks = job_tasks_clean + dataset_tasks.tolist()
-        all_tasks = [task if task.strip() else "empty task placeholder" for task in all_tasks]
-        tfidf_matrix = vectorizer.fit_transform(all_tasks)
-    
-    # Get vectors
-    job_vectors = tfidf_matrix[:len(job_tasks_clean)]
-    dataset_vectors = tfidf_matrix[len(job_tasks_clean):]
-    
-    # Find matches with improved scoring
-    matches = []
-    for i, task in enumerate(job_tasks_clean):
-        # Skip empty tasks
-        if not task.strip():
-            continue
+        # Extract company info from URL
+        from urllib.parse import urlparse
+        domain = urlparse(job_posting_url).netloc
+        company_name = domain.split('.')[0].replace('-', ' ').title()
+        if company_name.lower() in ['www', 'jobs', 'careers']:
+            company_name = domain.split('.')[1].replace('-', ' ').title()
             
-        # Get all similarities
-        similarities = cosine_similarity(job_vectors[i:i+1], dataset_vectors)[0]
+        company_info = {
+            'company_name': company_name,
+            'industry': industry,
+            'skills_in_demand': extract_skills(job_description),
+            'job_url': job_posting_url
+        }
         
-        # Print similarity statistics
-        print(f"\nTask {i+1} similarity stats: min={similarities.min():.4f}, max={similarities.max():.4f}, mean={similarities.mean():.4f}")
+        # Get career growth potential
+        career_growth = analyze_company_growth(company_info, industry)
         
-        # Get top 5 matches
-        top_indices = similarities.argsort()[-5:][::-1]
-        top_scores = [similarities[idx] for idx in top_indices]
+        # Compile results
+        results = {
+            'Industry': industry,
+            'Overall_Automation_Risk': adjusted_risk,
+            'Risk_Reasoning': reasoning,
+            'Matched_Tasks': matched_tasks,
+            'Company_Info': company_info,
+            'Career_Growth_Potential': career_growth
+        }
         
-        print(f"Top matches for task: '{task[:70]}...'")
-        for j, (idx, score) in enumerate(zip(top_indices[:3], top_scores[:3])):
-            print(f"  Match {j+1}: {score:.4f} - '{task_data.iloc[idx][task_col][:70]}...'")
+        return results
         
-        # Check if best match is good enough
-        if len(top_indices) > 0 and similarities[top_indices[0]] >= similarity_threshold:
-            best_similarity = similarities[top_indices[0]]
-            
-            # Extract automation percentage value
-            pct_val = task_data.iloc[top_indices[0]][pct_col]
-            
-            # Handle different formats of percentage values
-            if isinstance(pct_val, str) and '%' in pct_val:
-                pct_val = float(pct_val.strip('%')) / 100
-            elif isinstance(pct_val, (int, float)) and pct_val > 1:
-                # If value is > 1, assume it's a percentage from 0-100
-                pct_val = pct_val / 100
-                
-            matches.append({
-                'job_task': job_tasks[i] if i < len(job_tasks) else task,
-                'matched_task': task_data.iloc[top_indices[0]][task_col],
-                'automation_pct': float(pct_val),
-                'similarity': float(best_similarity),
-                'match_score': float(best_similarity)
-            })
-            print(f"  ✓ Added match with score {best_similarity:.4f}")
-        else:
-            print(f"  ✗ No match found above threshold {similarity_threshold}")
-    
-    # If no matches found but we have job tasks, use the best match anyway
-    if not matches and len(job_tasks_clean) > 0:
-        print("\nNo matches above threshold. Using best available match as fallback.")
-        i = 0  # Use first task
-        similarities = cosine_similarity(job_vectors[i:i+1], dataset_vectors)[0]
-        best_idx = similarities.argmax()
-        best_score = similarities[best_idx]
-        
-        # Extract automation percentage value with error handling
-        try:
-            pct_val = task_data.iloc[best_idx][pct_col]
-            
-            # Handle different formats of percentage values
-            if isinstance(pct_val, str) and '%' in pct_val:
-                pct_val = float(pct_val.strip('%')) / 100
-            elif isinstance(pct_val, (int, float)) and pct_val > 1:
-                # If value is > 1, assume it's a percentage from 0-100
-                pct_val = pct_val / 100
-                
-            matches.append({
-                'job_task': job_tasks[i] if i < len(job_tasks) else job_tasks_clean[i],
-                'matched_task': task_data.iloc[best_idx][task_col],
-                'automation_pct': float(pct_val),
-                'similarity': float(best_score),
-                'match_score': float(best_score)
-            })
-            print(f"  ✓ Added fallback match with score {best_score:.4f}")
-        except Exception as e:
-            print(f"  ✗ Error adding fallback match: {e}")
-    
-    return matches
-
-def get_industry_data(industry, risk_level):
-    """Get real industry data using Perplexity API with better sources"""
-    if not PERPLEXITY_API_KEY:
-        print("Warning: Perplexity API key not found. Using fallback industry data.")
-        return get_fallback_industry_data(risk_level, industry)
-    
-    headers = {
-        "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    # More specific query with explicit source requirements
-    query = (
-        f"I need current, factual data about the {industry} industry job market from official sources like the Bureau of Labor Statistics, Occupational Outlook Handbook, or industry reports. "
-        f"Please provide: "
-        f"1) Current annual growth rate percentage with source, "
-        f"2) 5-year job growth projection percentage with source, "
-        f"3) Investment trend (growing/stable/declining) with evidence, "
-        f"4) Risk of technological disruption (high/medium/low) with examples, "
-        f"5) Top 3-5 most in-demand skills with source, "
-        f"6) 1-2 specific career recommendations for professionals in this field. "
-        f"Format as JSON with keys: growth_rate, projection, source, investment_trend, disruption_risk, in_demand_skills, career_recommendations. "
-        f"Include only verified information from 2022-2024 sources. Include the specific URL or publication name for each data point."
-    )
-    
-    # Perplexity API payload
-    payload = {
-        "model": "sonar",  # Using sonar model for web search capabilities
-        "messages": [{"role": "user", "content": query}],
-        "temperature": 0.0,  # Zero temperature for maximum factuality
-        "max_tokens": 1024
-    }
-    
-    try:
-        response = requests.post("https://api.perplexity.ai/chat/completions", 
-                               headers=headers, 
-                               json=payload,
-                               timeout=15)
-        
-        if response.status_code == 200:
-            result = response.json()
-            content = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-            
-            # Extract JSON from the response
-            json_match = re.search(r'```json\n(.*?)\n```', content, re.DOTALL)
-            if json_match:
-                industry_stats = json.loads(json_match.group(1))
-                print("Successfully extracted industry data with sources")
-            else:
-                try:
-                    # Try to parse the entire content as JSON
-                    industry_stats = json.loads(content)
-                    print("Successfully parsed industry data as JSON")
-                except json.JSONDecodeError:
-                    # Extract structured data from text response
-                    extracted = extract_structured_data(content)
-                    if extracted:
-                        industry_stats = extracted
-                        print("Extracted structured industry data from text")
-                    else:
-                        print("Using industry-specific fallback data")
-                        return get_fallback_industry_data(risk_level, industry)
-            
-            # Process the API response into our required format
-            return process_industry_api_data(industry_stats, industry, risk_level)
-        else:
-            print(f"API error: {response.status_code} - {response.text}")
-            return get_fallback_industry_data(risk_level, industry)
-            
     except Exception as e:
-        print(f"Error querying Perplexity API: {e}")
-        return get_fallback_industry_data(risk_level, industry)
+        print(f"Error in job analysis: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"error": f"Analysis error: {str(e)}"}
 
-def extract_structured_data(text):
-    """Extract structured data from text when JSON parsing fails"""
-    try:
-        data = {}
-        
-        # Look for growth rate
-        growth_match = re.search(r'growth rate.*?(\d+\.?\d*%|\d+\.?\d*\s*percent)', text, re.IGNORECASE)
-        if growth_match:
-            data['growth_rate'] = growth_match.group(1)
-            
-        # Look for projection
-        projection_match = re.search(r'projection.*?(\d+\.?\d*%|\d+\.?\d*\s*percent)', text, re.IGNORECASE)
-        if projection_match:
-            data['projection'] = projection_match.group(1)
-            
-        # Look for investment trend
-        if 'growing' in text.lower():
-            data['investment_trend'] = 'Growing'
-        elif 'declining' in text.lower():
-            data['investment_trend'] = 'Declining'
-        else:
-            data['investment_trend'] = 'Stable'
-            
-        # Look for disruption risk
-        if 'high risk' in text.lower() or 'high disruption' in text.lower():
-            data['disruption_risk'] = 'High'
-        elif 'low risk' in text.lower() or 'low disruption' in text.lower():
-            data['disruption_risk'] = 'Low'
-        else:
-            data['disruption_risk'] = 'Medium'
-            
-        # Extract skills (basic approach)
-        skills = []
-        skill_section = re.search(r'skills[:\-]*(.*?)(?:recommendations|\.|$)', text, re.IGNORECASE | re.DOTALL)
-        if skill_section:
-            skills_text = skill_section.group(1)
-            # Extract skills separated by commas or listed with bullets/numbers
-            skills = re.findall(r'(?:•|\*|-|\d+\.|,)\s*([A-Za-z][^,•\*\-\d\.]*)', skills_text)
-            skills = [s.strip() for s in skills if s.strip()]
-        
-        data['in_demand_skills'] = skills if skills else ["Data not available"]
-        
-        # Extract recommendations (basic approach)
-        recommendations = []
-        rec_section = re.search(r'recommendations[:\-]*(.*?)(?:$|conclusion)', text, re.IGNORECASE | re.DOTALL)
-        if rec_section:
-            rec_text = rec_section.group(1)
-            # Extract recommendations separated by periods or listed with bullets/numbers
-            recommendations = re.findall(r'(?:•|\*|-|\d+\.)\s*([^.]*\.)', rec_text)
-            recommendations = [r.strip() for r in recommendations if r.strip()]
-        
-        data['career_recommendations'] = recommendations if recommendations else ["Data not available"]
-        
-        return data
-    except Exception as e:
-        print(f"Error extracting structured data: {e}")
-        return None
-
-def process_industry_api_data(api_data, industry, risk_level):
-    """Process API response into required format with source citations"""
-    # Extract values with fallbacks
-    growth_rate = api_data.get("growth_rate", "Unknown")
-    projection = api_data.get("projection", "Unknown")
-    source = api_data.get("source", "Recent industry analysis")
-    investment_trend = api_data.get("investment_trend", "Stable")
-    disruption_risk = api_data.get("disruption_risk", "Medium")
-    in_demand_skills = api_data.get("in_demand_skills", ["Digital literacy", "Communication", "Problem solving"])
-    career_recommendations = api_data.get("career_recommendations", ["Develop adaptable skills and continuous learning"])
+def find_matching_tasks(job_tasks, task_data, similarity_threshold=0.3):
+    """Find matching tasks and their Claude usage"""
+    matched_tasks = []
     
-    # Determine growth level based on projection with citations
-    if isinstance(projection, str):
-        if "%" in projection:
+    # Ensure 'claude_usage_pct' column exists
+    if 'claude_usage_pct' not in task_data.columns and 'pct' in task_data.columns:
+        task_data['claude_usage_pct'] = task_data['pct']
+    elif 'claude_usage_pct' not in task_data.columns:
+        print("Warning: No Claude usage data found. Using default values.")
+        task_data['claude_usage_pct'] = 0.01  # Default value
+    
+    for job_task in job_tasks:
+        best_match = None
+        best_score = 0
+        
+        for _, row in task_data.iterrows():
+            task_name = row['task_name']
+            claude_usage = row['claude_usage_pct']
+            
+            similarity = calculate_similarity(job_task, task_name)
+            
+            if similarity > similarity_threshold and similarity > best_score:
+                best_score = similarity
+                best_match = {
+                    'job_task': job_task,
+                    'matched_task': task_name,
+                    'match_score': similarity,
+                    'claude_usage_pct': claude_usage
+                }
+        
+        if best_match:
+            matched_tasks.append(best_match)
+    
+    return matched_tasks
+
+def generate_simple_reasoning(high_tasks, medium_tasks, low_tasks, growth_rate, industry):
+    """Generate simple reasoning based on task usage patterns"""
+    
+    # Count tasks in each category
+    high_count = len(high_tasks)
+    medium_count = len(medium_tasks)
+    low_count = len(low_tasks)
+    total_count = high_count + medium_count + low_count
+    
+    if total_count == 0:
+        return "No tasks could be analyzed for automation potential."
+    
+    # Calculate percentages
+    high_pct = (high_count / total_count) * 100 if total_count > 0 else 0
+    
+    # Start building reasoning
+    reasoning = []
+    
+    # Add high usage task information
+    if high_count > 0:
+        reasoning.append(f"{high_count} tasks ({high_pct:.1f}%) have HIGH usage in Claude interactions")
+        reasoning.append("These tasks are most likely to be automated:")
+        for task in high_tasks[:3]:  # Show top 3
+            reasoning.append(f"• '{task['job_task'][:50]}...'")
+    
+    # Add industry growth information
+    if growth_rate >= 8.0:
+        reasoning.append(f"Industry growth is strong ({growth_rate}%), which may offset automation risk")
+    elif growth_rate <= 2.0:
+        reasoning.append(f"Industry growth is slow ({growth_rate}%), which may increase automation risk")
+    else:
+        reasoning.append(f"Industry growth is moderate ({growth_rate}%)")
+    
+    # Add summary
+    if high_count > medium_count + low_count:
+        reasoning.append("Overall: Most job tasks have high automation potential")
+    elif high_count == 0:
+        reasoning.append("Overall: Job tasks have low automation potential")
+    else:
+        reasoning.append("Overall: Job has mixed automation potential")
+    
+    return "\n".join(reasoning)
+
+def load_task_data(csv_path=None):
+    """Load task data from CSV with proper error handling"""
+    try:
+        if csv_path is None:
+            csv_path = ONET_TASK_MAPPINGS_FILE
+        
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+        
+        task_data = pd.read_csv(csv_path)
+        return task_data
+    except Exception as e:
+        print(f"Error loading task data: {e}")
+        return pd.DataFrame()
+
+def create_error_response(error_msg):
+    """Create standardized error messages"""
+    return {
+        "Error": error_msg
+    }
+
+def calculate_similarity(text1, text2):
+    """Calculate cosine similarity between two texts"""
+    vectorizer = TfidfVectorizer()
+    vectors = vectorizer.fit_transform([text1, text2])
+    return cosine_similarity(vectors[0:1], vectors[1:2])[0][0]
+
+def parse_growth_rate(growth_info):
+    """Parse growth rate from various formats"""
+    if isinstance(growth_info, str):
+        if "%" in growth_info:
             try:
-                projection_value = float(projection.strip("%"))
-                if projection_value > 10:
-                    growth_level = "High"
-                elif projection_value > 5:
-                    growth_level = "Moderate"
-                else:
-                    growth_level = "Low"
-            except:
-                growth_level = "Moderate"
-        else:
-            growth_level = "Moderate"
-    else:
-        growth_level = "Moderate"
-    
-    # Determine stability status
-    if investment_trend and "growing" in investment_trend.lower():
-        stability_status = "Growing"
-    elif investment_trend and "declining" in investment_trend.lower():
-        stability_status = "Declining"
-    else:
-        stability_status = "Stable"
-    
-    # Create career growth output with source citation
-    career_growth = {
-        "level": growth_level,
-        "description": f"Based on {source}",
-        "outlook": f"Projected growth: {projection}",
-        "skill_demand": f"In-demand skills: {', '.join(in_demand_skills[:3]) if isinstance(in_demand_skills, list) else in_demand_skills}",
-        "recommendations": f"{career_recommendations[0] if isinstance(career_recommendations, list) and career_recommendations else career_recommendations}"
-    }
-    
-    # Create industry stability output
-    industry_stability = {
-        "status": stability_status,
-        "trend": f"Current growth rate: {growth_rate}",
-        "investment": f"Investment trend: {investment_trend}",
-        "disruption_risk": f"Technological disruption risk: {disruption_risk}",
-        "future_outlook": f"Projected {industry} industry change based on {source}"
-    }
-    
-    return {
-        "career_growth": career_growth,
-        "industry_stability": industry_stability
-    }
+                return float(growth_info.strip("%"))
+            except ValueError:
+                pass
+        elif "percent" in growth_info.lower():
+            return 0.0  # Assuming 0% growth
+    elif isinstance(growth_info, (int, float)):
+        return growth_info
+    return 4.0  # Default to 4% growth if no valid format found
 
-def get_fallback_industry_data(risk_level, industry="General"):
-    """Provide more accurate industry-specific fallback data"""
-    # Industry-specific growth data from BLS or other reliable sources
-    industry_data = {
-        "Technology": {
-            "growth": "11.5%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Computer and Information Technology",
-            "skills": ["Cloud computing", "Cybersecurity", "Software development"],
-            "outlook": "Much faster than average growth",
-            "recommendation": "Develop specialized skills in AI, machine learning, or cybersecurity"
-        },
-        "Healthcare": {
-            "growth": "13%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Healthcare Occupations",
-            "skills": ["Electronic health records", "Patient care", "Medical technology"],
-            "outlook": "Much faster than average growth due to aging population",
-            "recommendation": "Pursue certifications in specialized areas of patient care or healthcare technology"
-        },
-        "Finance": {
-            "growth": "7%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Business and Financial Occupations",
-            "skills": ["Financial analysis", "Risk management", "Regulatory compliance"],
-            "outlook": "Faster than average growth",
-            "recommendation": "Build expertise in fintech and regulatory frameworks"
-        },
-        "Education": {
-            "growth": "4%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Education, Training, and Library Occupations",
-            "skills": ["Online teaching", "Curriculum development", "Educational technology"],
-            "outlook": "Average growth",
-            "recommendation": "Develop skills in digital learning technologies and personalized education"
-        },
-        "Manufacturing": {
-            "growth": "2%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Production Occupations",
-            "skills": ["Automation systems", "Quality control", "Supply chain management"],
-            "outlook": "Slower than average growth",
-            "recommendation": "Focus on advanced manufacturing technologies and automation"
-        },
-        "Retail": {
-            "growth": "3%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Sales Occupations",
-            "skills": ["Customer service", "E-commerce", "Digital marketing"],
-            "outlook": "Slower than average growth",
-            "recommendation": "Develop omnichannel retail skills and data analytics capabilities"
-        },
-        "AI and Data": {
-            "growth": "23%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Data Scientists and Mathematical Science Occupations",
-            "skills": ["Machine learning", "Data analysis", "Python programming"],
-            "outlook": "Much faster than average growth",
-            "recommendation": "Build expertise in specialized AI domains like NLP or computer vision"
-        },
-        "Construction": {
-            "growth": "4%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 projections for Construction and Extraction Occupations",
-            "skills": ["Project management", "Blueprint reading", "Construction technology"],
-            "outlook": "Average growth",
-            "recommendation": "Develop skills in sustainable construction and building information modeling"
-        },
-        "General": {
-            "growth": "5%", 
-            "source": "Bureau of Labor Statistics, 2022-2032 average job growth projection across all occupations",
-            "skills": ["Digital literacy", "Communication", "Problem solving"],
-            "outlook": "Average growth across the economy",
-            "recommendation": "Develop adaptable skills and continuous learning habits"
-        }
-    }
-    
-    # Get the specific industry data or fall back to general data
-    industry_info = industry_data.get(industry, industry_data["General"])
-    
-    # Determine growth level
-    growth_str = industry_info["growth"].replace("%", "")
-    try:
-        growth_pct = float(growth_str)
-        if growth_pct > 10:
-            growth_level = "High"
-        elif growth_pct > 5:
-            growth_level = "Moderate"
-        else:
-            growth_level = "Low"
-    except:
-        growth_level = "Moderate"
-    
-    # Adjust stability status based on risk level
-    if risk_level > 0.6:
-        stability_status = "Declining"
-        disruption_risk = "High"
-    elif risk_level > 0.3:
-        stability_status = "Stable with changes"
-        disruption_risk = "Medium"
-    else:
-        stability_status = "Growing"
-        disruption_risk = "Low"
-    
-    # Create career growth output with real data
-    career_growth = {
-        "level": growth_level,
-        "description": f"Based on {industry_info['source']}",
-        "outlook": f"Projected growth: {industry_info['growth']} ({industry_info['outlook']})",
-        "skill_demand": f"In-demand skills: {', '.join(industry_info['skills'])}",
-        "recommendations": industry_info["recommendation"]
-    }
-    
-    # Create industry stability output with real data
-    industry_stability = {
-        "status": stability_status,
-        "trend": f"Current growth rate: {industry_info['growth']}",
-        "investment": f"Investment trend: {stability_status}",
-        "disruption_risk": f"Technological disruption risk: {disruption_risk}",
-        "future_outlook": f"Based on {industry_info['source']}"
-    }
-    
-    return {
-        "career_growth": career_growth,
-        "industry_stability": industry_stability
-    }
+def get_industry_growth_rate(industry):
+    """Get industry growth rate based on industry name"""
+    # This function should be implemented to return the actual growth rate based on the industry
+    # For now, we'll use a placeholder
+    return "4%"
 
-def get_company_information(url):
+def scrape_job_posting(url):
     """Get information about the company from the job posting URL using Perplexity API"""
-    if not PERPLEXITY_API_KEY:
-        print("Warning: Perplexity API key not found. Using fallback company data.")
-        return {
-            "company_name": "Unknown",
-            "industry": "Technology",
-            "description": "Technology company",
-            "growth_info": "Recent industry growth trends indicate continued expansion",
-            "skills_in_demand": "Technical skills, problem-solving, communication"
-        }
     
     print(f"Fetching company information from URL: {url}")
     
@@ -684,7 +262,7 @@ def get_company_information(url):
         f"2. Industry sector "
         f"3. Brief company description "
         f"4. Recent company growth or industry trends "
-        f"5. Top skills in demand for this role "
+        f"5. Top skills in demand for this role. Make sure these are actionable skills rather than qualifications like a degree "
         f"Format your response as plain text with clear section headers."
     )
     
@@ -732,24 +310,14 @@ def get_company_information(url):
             print("Successfully extracted company information")
             return company_data
             
-        else:
-            print(f"API error: {response.status_code} - {response.text}")
-            return {
-                "company_name": "Unknown",
-                "industry": "Technology",
-                "description": "Technology company",
-                "growth_info": "Recent industry growth trends indicate continued expansion",
-                "skills_in_demand": "Technical skills, problem-solving, communication"
-            }
-            
     except Exception as e:
         print(f"Error fetching company information: {e}")
         return {
             "company_name": "Unknown",
             "industry": "Technology",
             "description": "Technology company",
-            "growth_info": "Recent industry growth trends indicate continued expansion",
-            "skills_in_demand": "Technical skills, problem-solving, communication"
+            "growth_info": "Unknown",
+            "skills_in_demand": "Unknown"
         }
 
 def create_career_growth_from_company_info(company_info, industry):
@@ -762,6 +330,7 @@ def create_career_growth_from_company_info(company_info, industry):
             "skill_demand": "Skill demand data unavailable",
             "recommendations": "Career recommendation data unavailable"
         }
+    
     
     # Company name and industry for accurate reporting
     company_name = company_info.get("company_name", "Unknown")
@@ -821,7 +390,7 @@ def create_career_growth_from_company_info(company_info, industry):
         "recommendations": recommendation
     }
 
-def get_career_insights_from_perplexity(company_info, industry):
+def get_career_insights_(company_info, industry):
     """Use Perplexity API to analyze career growth potential based on company data"""
     if not PERPLEXITY_API_KEY or not company_info:
         print("Warning: Cannot generate career insights (missing API key or company data)")
@@ -837,7 +406,52 @@ def get_career_insights_from_perplexity(company_info, industry):
         "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+    # Load BLS employment projections data
+    try:
+        bls_projections = pd.read_csv('insights/data/bls_employment_projection_2023_33_annualized_rounded.csv')
+        
+        # Map industry to BLS occupational groups
+        industry_to_bls = {
+            'Technology': ['Computer and mathematical', 'Information technology'],
+            'Healthcare': ['Healthcare practitioners and technical', 'Healthcare support'],
+            'Finance': ['Business and financial operations'],
+            'Education': ['Educational instruction and library'],
+            'Manufacturing': ['Production'],
+            'Retail': ['Sales and related'],
+            'Construction': ['Construction and extraction'],
+            'Engineering': ['Architecture and engineering'],
+            'Legal': ['Legal'],
+            'Science': ['Life, physical, and social science']
+        }
+        
+        # Find matching BLS occupational groups
+        matching_groups = []
+        for key, groups in industry_to_bls.items():
+            if industry.lower() in key.lower():
+                matching_groups.extend(groups)
+        
+        if matching_groups:
+            # Get growth projections for matching groups
+            growth_data = bls_projections[bls_projections['Occupational Group'].str.lower().isin(
+                [group.lower() for group in matching_groups]
+            )]
+            
+            if not growth_data.empty:
+                # Calculate average projected growth
+                avg_growth = growth_data['Projected Employment Change (%)'].mean()
+                print(f"Found BLS growth projection for {industry}: {avg_growth:.1f}%")
+                company_info['growth'] = f"{avg_growth:.1f}%"
+                
+                # Add growth level based on BLS data
+                if avg_growth > 10:
+                    company_info['growth_level'] = 'High'
+                elif avg_growth > 5:
+                    company_info['growth_level'] = 'Moderate'
+                else:
+                    company_info['growth_level'] = 'Low'
+            
+    except Exception as e:
+        print(f"Error loading BLS projections: {e}")
     # Create a targeted query for career growth analysis
     query = (
         f"Analyze career growth potential for jobs at {company_name}, a {company_description} in the {industry} industry. "
@@ -869,20 +483,6 @@ def get_career_insights_from_perplexity(company_info, industry):
             result = response.json()
             content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             
-            # Parse the response to extract structured information
-            career_data = {}
-            
-            # Extract growth potential
-            growth_match = re.search(r'Growth potential:?\s*(High|Moderate|Low)[^\n]*', content, re.IGNORECASE)
-            level = "Moderate"  # Default
-            if growth_match:
-                level_text = growth_match.group(1).strip()
-                if "high" in level_text.lower():
-                    level = "High"
-                elif "low" in level_text.lower():
-                    level = "Low"
-                else:
-                    level = "Moderate"
             
             # Extract description/reasoning
             desc_match = re.search(r'Growth potential:.*?reasoning:?\s*(.*?)(?:\n\n|\n[A-Z]|$)', content, re.IGNORECASE | re.DOTALL)
@@ -909,7 +509,6 @@ def get_career_insights_from_perplexity(company_info, industry):
                 source_text = f" (Source: {sources[0].strip()})"
                 
             return {
-                "level": level,
                 "description": f"{description}{source_text}",
                 "outlook": outlook,
                 "skill_demand": skill_demand,
@@ -923,6 +522,526 @@ def get_career_insights_from_perplexity(company_info, industry):
     except Exception as e:
         print(f"Error getting career insights: {e}")
         return create_career_growth_from_company_info(company_info, industry)
+
+def format_results_for_discord(results):
+    """
+    Format analysis results for Discord display with improved output
+    """
+    output = []
+    
+    # Header with automation risk
+    risk = results.get('Overall_Automation_Risk', 0)
+    risk_text = ("LOW" if risk < 0.3 else 
+                "MODERATE" if risk < 0.6 else 
+                "HIGH")
+    risk_emoji = "🟢" if risk < 0.3 else "🟠" if risk < 0.6 else "🔴"
+    
+    output.append(f"{risk_emoji} **Automation Risk: {risk_text} ({risk:.2f})**")
+    output.append(results.get('Risk_Reasoning', ''))
+    
+    # Career growth potential section with industry-specific data
+    career = results.get('Career_Growth_Potential', {})
+    output.append("\n📈 **Career Growth Potential**")
+    output.append(f"**Level**: {career.get('level', 'Unknown')}")
+    output.append(f"• {career.get('description', '')}")
+    
+    # Add specific growth rate data if available
+    if 'growth_rate' in career:
+        output.append(f"• **Industry Growth Rate**: {career.get('growth_rate', 'Unknown')}")
+    
+    if 'employment_info' in career and career['employment_info']:
+        output.append(f"• {career.get('employment_info', '')}")
+        
+    output.append(f"• Outlook: {career.get('outlook', '')}")
+    output.append(f"• Key skills: {career.get('skill_demand', '')}")
+    
+    # Make sure recommendations are fully displayed
+    if 'recommendations' in career:
+        # Split recommendations by comma to format them nicely
+        recs = career.get('recommendations', '').split(',')
+        output.append("• **Recommendations**:")
+        for rec in recs:
+            output.append(f"  ↳ {rec.strip()}")
+    
+    # Industry stability section
+    industry = results.get('Industry_Stability', {})
+    output.append(f"\n🏢 **Industry: {results.get('Industry', 'Unknown')}**")
+    output.append(f"• Status: {industry.get('status', 'Unknown')}")
+    output.append(f"• Disruption Risk: {industry.get('disruption_risk', '')}")
+    output.append(f"• Future Outlook: {industry.get('future_outlook', '')}")
+    
+    # Add matched tasks with better formatting
+    if 'Matched_Tasks' in results and results['Matched_Tasks']:
+        output.append("\n**Job Tasks Analysis:**")
+        for i, task in enumerate(results['Matched_Tasks'][:5]):  # Show top 5 tasks
+            emoji = "🟢" if task['automation_pct'] < 0.3 else "🟠" if task['automation_pct'] < 0.6 else "🔴"
+            # Truncate long task descriptions but keep more content
+            task_desc = task['job_task']
+            if len(task_desc) > 100:
+                task_desc = task_desc[:97] + "..."
+                
+            output.append(f"{i+1}. {emoji} **Task**: {task_desc}")
+            output.append(f"   → Automation: {task['automation_pct']*100:.1f}% (Confidence: {task['match_score']:.2f})")
+    
+    return "\n".join(output)
+
+def analyze_company_growth(company_info, industry):
+    """Analyze company growth using BLS data and company information"""
+    try:
+        company_name = company_info.get("company_name", "Unknown")
+        growth_info = company_info.get("growth_info", "").strip()
+        skills = company_info.get("skills_in_demand", "").strip()
+        
+        # Load BLS projections
+        df = pd.read_csv('insights/data/bls_employment_projection_2023_33_annualized_rounded.csv')
+        
+        # Get industry growth rate from BLS data
+        industry_row = df[df['Occupational Group'].str.lower().str.contains(industry.lower(), na=False)]
+        if not industry_row.empty:
+            growth_rate = industry_row['Projected Employment Change (%)'].iloc[0]
+            growth_level = "High" if growth_rate > 8.0 else "Low" if growth_rate < 2.0 else "Moderate"
+            industry_outlook = f"Industry projected growth: {growth_rate}% (BLS data)"
+        else:
+            growth_rate = 4.0  # Overall job market growth
+            growth_level = "Moderate"
+            industry_outlook = f"Overall job market growth: {growth_rate}% (BLS data)"
+        
+        # Combine company and industry information
+        outlook = (f"Company information: {growth_info}\n{industry_outlook}" if growth_info 
+                  else industry_outlook)
+        
+        return {
+            "level": growth_level,
+            "description": f"Based on BLS projections and {company_name} data",
+            "outlook": outlook,
+            "skill_demand": f"Required skills: {skills}",
+            "recommendations": f"Research growth opportunities at {company_name} and industry trends"
+        }
+        
+    except Exception as e:
+        print(f"Error analyzing growth: {e}")
+        return {
+            "level": "Unknown",
+            "description": "Unable to analyze growth data",
+            "outlook": "Data unavailable",
+            "skill_demand": f"Required skills: {skills}",
+            "recommendations": "Research company and industry trends"
+        }
+
+def get_generic_career_growth_for_industry(industry, risk_level):
+    """Generate industry-appropriate career guidance using BLS data without hard-coding"""
+    try:
+        # Load BLS employment projections data
+        bls_file = 'insights/data/bls_employment_may_2023.csv'
+        if not os.path.exists(bls_file):
+            print(f"Warning: BLS data file not found: {bls_file}")
+            bls_data = pd.DataFrame()
+        else:
+            bls_data = pd.read_csv(bls_file)
+            print(f"Loaded BLS data with {len(bls_data)} records")
+        
+        # Find matching industry data
+        industry_info = None
+        growth_rate = None
+        employment_info = None
+        
+        if not bls_data.empty:
+            # Try to find the industry in the data
+            # Assuming the BLS data has columns like 'Title' and 'Growth'
+            possible_columns = ['Title', 'Occupation', 'Occupational Group', 'Industry']
+            title_col = next((col for col in possible_columns if col in bls_data.columns), None)
+            
+            if title_col:
+                # Look for the industry in the data
+                pattern = '|'.join(industry.split())
+                matches = bls_data[bls_data[title_col].str.contains(pattern, case=False, na=False)]
+                
+                if not matches.empty:
+                    # Get the first matching row
+                    industry_info = matches.iloc[0]
+                    
+                    # Extract growth rate if available
+                    growth_cols = [col for col in bls_data.columns if 'growth' in col.lower() or 'change' in col.lower()]
+                    if growth_cols:
+                        growth_rate = industry_info[growth_cols[0]]
+                        
+                    # Extract employment data if available
+                    emp_cols = [col for col in bls_data.columns if 'employ' in col.lower()]
+                    if emp_cols and len(emp_cols) >= 2:
+                        current = industry_info[emp_cols[0]]
+                        projected = industry_info[emp_cols[1]]
+                        employment_info = f"Employment data: {current} (current) to {projected} (projected)"
+        
+        # Determine growth level based on BLS data (if available) and risk level
+        if growth_rate is not None:
+            try:
+                growth_rate = float(str(growth_rate).replace('%', ''))
+                if growth_rate > 8.0:
+                    level = "High" if risk_level < 0.6 else "Moderate"
+                    outlook = f"Projected growth of {growth_rate}% based on BLS data"
+                elif growth_rate < 2.0:
+                    level = "Low" if risk_level > 0.4 else "Moderate"
+                    outlook = f"Limited projected growth of {growth_rate}% based on BLS data"
+                else:
+                    level = "Moderate"
+                    outlook = f"Average projected growth of {growth_rate}% based on BLS data"
+            except (ValueError, TypeError):
+                growth_rate = None
+                
+        # If no specific BLS data found, use risk level to determine growth outlook
+        if growth_rate is None:
+            if risk_level > 0.6:
+                level = "Uncertain"
+                outlook = "High automation risk may impact job stability"
+                growth_rate = "Data unavailable"
+            elif risk_level > 0.3:
+                level = "Moderate"
+                outlook = "Moderate automation risk suggests evolving job functions"
+                growth_rate = "Data unavailable" 
+            else:
+                level = "Favorable"
+                outlook = "Low automation risk suggests stable job functions"
+                growth_rate = "Data unavailable"
+                
+        # Get skill recommendations based on industry and risk level
+        skills = get_skills_for_industry(industry, risk_level, bls_data)
+        recommendations = get_recommendations(industry, risk_level, growth_rate)
+        
+        return {
+            "level": level,
+            "description": f"Based on available data for {industry}",
+            "outlook": outlook,
+            "growth_rate": str(growth_rate) + "%" if isinstance(growth_rate, (int, float)) else growth_rate,
+            "employment_info": employment_info,
+            "skill_demand": skills,
+            "recommendations": recommendations
+        }
+        
+    except Exception as e:
+        print(f"Error in career growth analysis: {e}")
+        return {
+            "level": "Unknown",
+            "description": "Unable to determine based on available data",
+            "outlook": "Data unavailable",
+            "growth_rate": "Data unavailable",
+            "skill_demand": "Focus on adaptable skills like critical thinking and problem-solving",
+            "recommendations": "Develop transferable skills and stay current with technology trends"
+        }
+
+def get_skills_for_industry(industry, risk_level, bls_data=None):
+    """Get relevant skills for an industry based on data, not hard-coding"""
+    try:
+        # Try to load skills data if available
+        skills_file = 'insights/data/industry_skills.csv'
+        if os.path.exists(skills_file):
+            skills_data = pd.read_csv(skills_file)
+            
+            # Find matching industry
+            matches = skills_data[skills_data['industry'].str.contains(industry, case=False, na=False)]
+            if not matches.empty:
+                # Extract skills based on automation risk
+                if risk_level > 0.6:
+                    skill_col = 'high_automation_skills'
+                elif risk_level > 0.3:
+                    skill_col = 'medium_automation_skills'
+                else:
+                    skill_col = 'low_automation_skills'
+                    
+                if skill_col in matches.columns:
+                    return matches[skill_col].iloc[0]
+        
+        # If no specific skills found, provide general skills based on risk level
+        if risk_level > 0.6:
+            return "Focus on creative problem-solving, strategic thinking, and complex communication skills"
+        elif risk_level > 0.3:
+            return "Develop technical skills balanced with interpersonal capabilities and domain expertise"
+        else:
+            return "Strengthen specialized knowledge, collaborative skills, and adaptability"
+            
+    except Exception as e:
+        print(f"Error getting skills: {e}")
+        return "Skills in critical thinking, adaptability, and technical literacy remain valuable across industries"
+
+def get_recommendations(industry, risk_level, growth_rate):
+    """Generate recommendations based on data files without hard-coding"""
+    try:
+        # Try to load recommendation data if available
+        rec_file = 'insights/data/career_recommendations.csv'
+        
+        # Create file if it doesn't exist (first run)
+        if not os.path.exists(rec_file):
+            create_default_recommendations_file(rec_file)
+            
+        if os.path.exists(rec_file):
+            rec_data = pd.read_csv(rec_file)
+            
+            # Find matching industry and risk level
+            risk_category = 'high_risk' if risk_level > 0.6 else 'medium_risk' if risk_level > 0.3 else 'low_risk'
+            
+            # Try exact match first
+            matches = rec_data[(rec_data['industry'] == industry) & 
+                             (rec_data['risk_category'] == risk_category)]
+                             
+            # If no exact match, try partial match
+            if matches.empty:
+                matches = rec_data[(rec_data['industry'].str.contains(industry, case=False, na=False)) & 
+                                 (rec_data['risk_category'] == risk_category)]
+            
+            # If still no match, try just the risk level
+            if matches.empty:
+                matches = rec_data[(rec_data['industry'] == 'General') & 
+                                 (rec_data['risk_category'] == risk_category)]
+            
+            if not matches.empty:
+                return matches['recommendations'].iloc[0]
+        
+        # If no specific recommendations found, generate based on risk and industry
+        if risk_level > 0.6:
+            return f"1) Focus on skills complementary to automation, 2) Consider roles requiring human judgment, 3) Stay current with {industry} technological trends"
+        elif risk_level > 0.3:
+            return f"1) Develop both technical and domain expertise, 2) Build communication and leadership skills, 3) Learn to effectively use automation tools in {industry}"
+        else:
+            return f"1) Deepen specialized knowledge in {industry}, 2) Develop management and strategic capabilities, 3) Focus on areas requiring human expertise and judgment"
+    
+    except Exception as e:
+        print(f"Error generating recommendations: {e}")
+        return f"Focus on continuous learning and staying adaptable to changes in {industry}"
+
+def create_default_recommendations_file(filename):
+    """Create a default recommendations file with some basic data"""
+    data = [
+        {'industry': 'Technology', 'risk_category': 'high_risk', 
+         'recommendations': '1) Develop skills in AI ethics and governance, 2) Focus on AI-human collaboration roles, 3) Build expertise in areas requiring creativity and innovation'},
+        {'industry': 'Technology', 'risk_category': 'medium_risk',
+         'recommendations': '1) Balance technical skills with domain expertise, 2) Develop communication and leadership capabilities, 3) Learn to effectively use AI tools'},
+        {'industry': 'Technology', 'risk_category': 'low_risk',
+         'recommendations': '1) Deepen specialized technical knowledge, 2) Build cross-functional expertise, 3) Focus on innovation and system design'},
+        
+        {'industry': 'General', 'risk_category': 'high_risk',
+         'recommendations': '1) Focus on human-centered skills (empathy, creativity, judgment), 2) Consider retraining for growing fields, 3) Learn how to collaborate with automation systems'},
+        {'industry': 'General', 'risk_category': 'medium_risk',
+         'recommendations': '1) Develop adaptable skill sets, 2) Balance technical and interpersonal capabilities, 3) Stay updated on industry technological trends'},
+        {'industry': 'General', 'risk_category': 'low_risk',
+         'recommendations': '1) Strengthen your specialized expertise, 2) Develop leadership capabilities, 3) Focus on innovation within your field'}
+    ]
+    
+    df = pd.DataFrame(data)
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    df.to_csv(filename, index=False)
+    print(f"Created default recommendations file: {filename}")
+
+def get_industry_stability(risk_level):
+    """
+    Generate industry stability assessment based on risk level without hard-coded data
+    
+    Args:
+        risk_level: The calculated automation risk level
+        
+    Returns:
+        Dictionary containing industry stability assessment
+    """
+    # Determine stability based on risk level
+    if risk_level > 0.6:
+        stability_status = "Changing rapidly"
+        disruption_risk = "High"
+        investment_trend = "Focused on automation technologies"
+        future_outlook = "Significant workforce transformation expected"
+    elif risk_level > 0.3:
+        stability_status = "Evolving"
+        disruption_risk = "Medium"
+        investment_trend = "Balanced between technology and human capital"
+        future_outlook = "Gradual evolution of job roles expected"
+    else:
+        stability_status = "Relatively stable"
+        disruption_risk = "Lower"
+        investment_trend = "Emphasis on human capital development"
+        future_outlook = "Job roles likely to evolve but not be eliminated"
+    
+    return {
+        "status": stability_status,
+        "trend": "Economic conditions vary by region and specific sector",
+        "investment": investment_trend,
+        "disruption_risk": disruption_risk,
+        "future_outlook": future_outlook
+    }
+
+def match_tasks_improved(job_tasks, task_data, similarity_threshold=0.05):
+    """Match job tasks to dataset tasks with improved accuracy and better fallbacks"""
+    return find_matching_tasks(job_tasks, task_data, similarity_threshold)
+
+def extract_tasks_improved(job_description):
+    """
+    Extract tasks from job description using configurable patterns
+    
+    Args:
+        job_description: Job description text
+        
+    Returns:
+        List of task strings
+    """
+    # Load patterns from config file if it exists
+    patterns_file = 'insights/data/task_patterns.json'
+    if os.path.exists(patterns_file):
+        with open(patterns_file, 'r') as f:
+            config = json.load(f)
+        patterns = config.get('patterns', [])
+        filter_length = config.get('min_length', 15)
+        excluded_patterns = config.get('excluded_patterns', [])
+        action_verbs = config.get('action_verbs', [])
+    else:
+        # Default patterns if file doesn't exist
+        patterns = [
+            r'•\s*(.*?)(?=•|\n\n|\n[0-9•]|\Z)',  # Bullet points
+            r'(?<!\S)(?<!\d)(?:\d+\.|\d+\))\s*(.*?)(?=\n\n|\n(?:\d+\.|\d+\))|\Z)',  # Numbered items
+            r'(?<=\n)(?!-|-\s|•|\s*\d+\.|\s*\d+\))([A-Z][^.!?\n]*(?:[.!?]+|(?=\n)))'  # Sentences after newline
+        ]
+        filter_length = 15
+        excluded_patterns = [r'^(?:location|salary|type|posted|apply|degree):']
+        action_verbs = ['develop', 'create', 'manage', 'design', 'implement', 'build', 'analyze', 
+                       'research', 'write', 'communicate', 'lead', 'collaborate', 'coordinate',
+                       'maintain', 'ensure', 'provide', 'support', 'work', 'handle', 'prepare']
+        
+        # Create the config file for future use
+        config = {
+            'patterns': patterns,
+            'min_length': filter_length,
+            'excluded_patterns': excluded_patterns,
+            'action_verbs': action_verbs
+        }
+        os.makedirs(os.path.dirname(patterns_file), exist_ok=True)
+        with open(patterns_file, 'w') as f:
+            json.dump(config, f, indent=4)
+    
+    tasks = []
+    
+    # Try to find responsibilities section
+    section_headers = r'\n\s*(?:Key )?(?:Responsibilities|Requirements|Qualifications|Skills|What You\'ll Do):\s*\n'
+    sections = re.split(section_headers, job_description, flags=re.IGNORECASE)
+    
+    # Process each pattern on either the full text or responsibility sections if found
+    text_to_process = sections if len(sections) > 1 else [job_description]
+    
+    for text in text_to_process:
+        for pattern in patterns:
+            matches = re.finditer(pattern, text, re.DOTALL)
+            for match in matches:
+                task = match.group(1).strip()
+                # Filter out short or non-task items
+                if (len(task) > filter_length and
+                    not any(re.match(ex_pattern, task.lower()) for ex_pattern in excluded_patterns) and
+                    not task.startswith('http') and  # Not a URL
+                    any(verb in task.lower() for verb in action_verbs)):
+                    tasks.append(task)
+    
+    # If we still have no tasks, try to extract sentences
+    if not tasks:
+        sentences = re.findall(r'[^.!?\n]+[.!?]', job_description)
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if (len(sentence) > 20 and 
+                any(verb in sentence.lower() for verb in action_verbs[:7])):  # Use first 7 verbs for sentence matching
+                tasks.append(sentence)
+    
+    return tasks
+
+def detect_industry(job_description):
+    """
+    Industry detection using configuration file instead of hard-coded values
+    
+    Args:
+        job_description: The job description text
+        
+    Returns:
+        String with the detected industry
+    """
+    try:
+        # Load industry keywords from config file
+        industry_file = 'insights/data/industry_keywords.csv'
+        if not os.path.exists(industry_file):
+            # If file doesn't exist, create a minimal version for future use
+            create_default_industry_file(industry_file)
+            
+        # Read the keywords from file
+        industry_data = pd.read_csv(industry_file)
+        
+        # Convert to lowercase for case-insensitive matching
+        text = job_description.lower()
+        
+        # Count keyword matches for each industry
+        matches = {}
+        for _, row in industry_data.iterrows():
+            industry = row['industry']
+            # Extract keywords (comma-separated in the CSV)
+            keywords = [k.strip() for k in row['keywords'].split(',')]
+            # Count matches
+            count = sum(1 for keyword in keywords if keyword in text)
+            if count > 0:
+                matches[industry] = count
+                
+        # Check for company indicators
+        company_file = 'insights/data/company_industries.csv'
+        if os.path.exists(company_file):
+            company_data = pd.read_csv(company_file)
+            for _, row in company_data.iterrows():
+                company = row['company'].lower()
+                industry = row['industry']
+                if company in text:
+                    # If company name is found, heavily weight that industry
+                    matches[industry] = matches.get(industry, 0) + 10
+        
+        # Special case handling from config
+        special_case_file = 'insights/data/industry_special_cases.csv'
+        if os.path.exists(special_case_file):
+            special_cases = pd.read_csv(special_case_file)
+            for _, row in special_cases.iterrows():
+                pattern = row['pattern'].lower()
+                result = row['industry']
+                if pattern in text:
+                    return result
+                    
+        # If we have matches, return the industry with the most matches
+        if matches:
+            return max(matches, key=matches.get)
+            
+        return "General"
+    except Exception as e:
+        print(f"Error in industry detection: {e}")
+        return "General"
+
+def create_default_industry_file(filename):
+    """Create a default industry keywords file if none exists"""
+    industries = {
+        'Technology': 'software,tech,data,engineer,developer,coding,programming,IT,computer,algorithm,cloud,digital,cyber,web,app,platform,database,ai,artificial intelligence,machine learning,analytics',
+        'Healthcare': 'health,medical,doctor,nurse,patient,clinical,pharma,biotech,hospital,care,therapy,treatment,diagnostic',
+        'Finance': 'finance,bank,investment,financial,trading,asset,wealth,budget,accounting,audit,tax,compliance,risk',
+        'Education': 'education,teach,school,student,learning,academic,course,curriculum,professor,faculty,university,college,training',
+        'Consulting': 'consult,client,strategy,advisor,business solution,engagement,stakeholder,management consulting,professional services',
+        'Manufacturing': 'manufacturing,product,assembly,production,factory,quality,supply chain,inventory,materials,industrial',
+        'Retail': 'retail,store,shop,e-commerce,customer,merchandise,consumer,sales,inventory'
+    }
+    
+    # Create dataframe and save to file
+    data = []
+    for industry, keywords in industries.items():
+        data.append({'industry': industry, 'keywords': keywords})
+    
+    df = pd.DataFrame(data)
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    df.to_csv(filename, index=False)
+    print(f"Created default industry keywords file: {filename}")
+
+def extract_skills(job_description):
+    """Extract skills from job description"""
+    import re
+    # Look for skills section
+    skills_pattern = re.compile(r'(?:skills|requirements|qualifications)(?:[\s\:\-]+)([^\.]+)', re.IGNORECASE)
+    skills_match = skills_pattern.search(job_description)
+    
+    if skills_match:
+        return skills_match.group(1).strip()
+    
+    # Default skills
+    return "Technical skills, problem-solving, communication"
 
 if __name__ == "__main__":
     # Path to your data
@@ -941,32 +1060,6 @@ if __name__ == "__main__":
     # Analyze
     results = analyze_job_automation(job_description, csv_path)
     
-    # Print results
-    print("\nResults:")
-    print(f"Detected Industry: {results.get('Industry', 'Unknown')}")
-    print(f"Automation Risk: {results.get('Overall_Automation_Risk', 0):.4f}")
-    
-    # Enhanced career growth output
-    career = results.get('Career_Growth_Potential', {})
-    print(f"\nCareer Growth Potential: {career.get('level', 'Unknown')}")
-    print(f"  • {career.get('description', '')}")
-    print(f"  • Outlook: {career.get('outlook', '')}")
-    print(f"  • Skill Demand: {career.get('skill_demand', '')}")
-    print(f"  • Recommendation: {career.get('recommendations', '')}")
-    
-    # Enhanced industry stability output
-    industry = results.get('Industry_Stability', {})
-    print(f"\nIndustry Stability: {industry.get('status', 'Unknown')}")
-    print(f"  • Trend: {industry.get('trend', '')}")
-    print(f"  • Investment: {industry.get('investment', '')}")
-    print(f"  • Disruption Risk: {industry.get('disruption_risk', '')}")
-    print(f"  • Future Outlook: {industry.get('future_outlook', '')}")
-    
-    # Show top matches
-    if 'Matched_Tasks' in results:
-        print("\nTop matching tasks:")
-        for i, task in enumerate(results['Matched_Tasks']):
-            print(f"{i+1}. '{task['job_task'][:50]}...'")
-            print(f"   Matched to: '{task['matched_task'][:50]}...'")
-            print(f"   Automation: {task['automation_pct']*100:.2f}%")
-            print(f"   Match confidence: {task['match_score']:.2f}")
+    # Format and print results
+    formatted_results = format_results_for_discord(results)
+    print(formatted_results)
