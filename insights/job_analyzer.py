@@ -7,9 +7,9 @@ import re
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
-from task_processor import extract_tasks, preprocess_text, detect_industry
-from config import ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE, HIGH_GROWTH_THRESHOLD, MODERATE_GROWTH_THRESHOLD
-from job_fetcher import fetch_job_from_url
+from insights.task_processor import extract_tasks, preprocess_text, detect_industry
+from insights.config import ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE, HIGH_GROWTH_THRESHOLD, MODERATE_GROWTH_THRESHOLD
+from insights.job_fetcher import fetch_job_from_url
 
 # Load environment variables
 load_dotenv()

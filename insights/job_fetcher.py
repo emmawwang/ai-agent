@@ -3,7 +3,7 @@ import requests
 import json
 import re
 from dotenv import load_dotenv
-from config import ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE
+from insights.config import ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE
 
 # Load environment variables
 load_dotenv()
