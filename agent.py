@@ -60,29 +60,34 @@ class MistralAgent:
             return self.show_upcoming(user_id)
         elif command == "!followups":
             return self.show_followups(user_id)
+        elif command == "!delete":
+            return self.delete_job(parts[1:], user_id, username)
         else:
-            return f"Unknown command: {command}. Try !process, !list, !upcoming, or !followups."
+            return f"Unknown command: {command}. Try !process, !list, !upcoming, !followups, or !delete."
 
     def process_job(self, args, user_id, username):
         """Add or update a job application"""
-        if len(args) < 2:
-            return "Please provide both company name and status. Format: !process company_name status [date]"
+        if len(args) < 3:
+            return (
+                "Please provide company name, role, and status. "
+                "Format: !process <company> <role> <status> [date]"
+            )
         
         company = args[0]
-        status = args[1].lower()
+        role = args[1]
+        status = args[2].lower()
         
         # Validate status
         valid_statuses = ["applied", "oa", "phone", "superday", "offer", "rejected"]
         if status not in valid_statuses:
             return f"Invalid status. Please use one of: {', '.join(valid_statuses)}"
         
-        # Parse date if provided, otherwise use today
+        # Parse date if provided; otherwise, use today
         date = datetime.now().strftime("%Y-%m-%d")
-        if len(args) >= 3:
+        if len(args) >= 4:
             try:
-                # Validate date format
-                datetime.strptime(args[2], "%Y-%m-%d")
-                date = args[2]
+                datetime.strptime(args[3], "%Y-%m-%d")
+                date = args[3]
             except ValueError:
                 return "Invalid date format. Please use YYYY-MM-DD."
         
@@ -90,17 +95,19 @@ class MistralAgent:
         if user_id not in self.db:
             self.db[user_id] = {"username": username, "jobs": {}}
         
-        # Add or update job
+        # Initialize company in db if not exists
         if company not in self.db[user_id]["jobs"]:
             self.db[user_id]["jobs"][company] = {}
+        if role not in self.db[user_id]["jobs"][company]:
+            self.db[user_id]["jobs"][company][role] = {}
         
-        # Update status with date
-        self.db[user_id]["jobs"][company][status] = date
+        # Update status/date
+        self.db[user_id]["jobs"][company][role][status] = date
         
         # Save changes
         self.save_database()
         
-        return f"Updated {company} to status '{status}' on {date}."
+        return f"Updated {company} ({role}) to status '{status}' on {date}."
 
     def list_jobs(self, user_id):
         """List all job applications for a user"""
@@ -110,10 +117,12 @@ class MistralAgent:
         jobs = self.db[user_id]["jobs"]
         response = "Your job applications:\n\n"
         
-        for company, statuses in jobs.items():
+        for company, roles_dict in jobs.items():
             response += f"**{company}**\n"
-            for status, date in sorted(statuses.items()):
-                response += f"• {status.capitalize()}: {date}\n"
+            for role, statuses in roles_dict.items():
+                response += f"  - {role}:\n"
+                for status, date in sorted(statuses.items()):
+                    response += f"      • {status.capitalize()}: {date}\n"
             response += "\n"
         
         return response
@@ -129,33 +138,44 @@ class MistralAgent:
         today = datetime.now().date()
         found_upcoming = False
         
-        for company, statuses in jobs.items():
-            # Skip if rejected or offered
-            if "rejected" in statuses or "offer" in statuses:
-                continue
+        for company, roles_dict in jobs.items():
+        # Iterate through each role under this company
+            for role, statuses in roles_dict.items():
+                # If the user already has "rejected" or "offer" for this role, skip it
+                if "rejected" in statuses or "offer" in statuses:
+                    continue
                 
-            # Find interview stages (oa, phone, superday)
-            interview_stages = {s: d for s, d in statuses.items() if s in ["oa", "phone", "superday"]}
-            
-            for stage, date_str in interview_stages.items():
-                interview_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                # Pull out just the relevant interview stages for this role
+                interview_stages = {s: d for s, d in statuses.items() 
+                                    if s in ["oa", "phone", "superday"]}
                 
-                # If interview is today or in the future
-                if interview_date >= today:
-                    days_until = (interview_date - today).days
-                    if days_until == 0:
-                        time_info = "Today"
-                    elif days_until == 1:
-                        time_info = "Tomorrow"
-                    else:
-                        time_info = f"In {days_until} days"
-                        
-                    response += f"**{company}** - {stage.capitalize()} interview on {date_str} ({time_info})\n"
-                    found_upcoming = True
+                # For each interview stage, check if it's coming up
+                for stage, date_str in interview_stages.items():
+                    try:
+                        interview_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    except ValueError:
+                        # If the date in the database is in the wrong format, skip gracefully
+                        continue
+                    
+                    # If interview is today or in the future
+                    if interview_date >= today:
+                        days_until = (interview_date - today).days
+                        if days_until == 0:
+                            time_info = "Today"
+                        elif days_until == 1:
+                            time_info = "Tomorrow"
+                        else:
+                            time_info = f"In {days_until} days"
+                            
+                        response += (
+                            f"**{company}** ({role}) - {stage.capitalize()} interview "
+                            f"on {date_str} ({time_info})\n"
+                        )
+                        found_upcoming = True
         
         if not found_upcoming:
             return "You don't have any upcoming interviews. Keep applying!"
-            
+        
         return response
 
     def show_followups(self, user_id):
@@ -205,6 +225,41 @@ class MistralAgent:
             return "No applications currently need follow-ups. You're on top of things!"
             
         return response
+    
+
+    def delete_job(self, args, user_id, username):
+        """
+        Delete a specific job application from the user's list.
+        Usage: !delete company_name
+        """
+        if len(args) < 2:
+            return "Please provide both the company name and the role. Format: !delete <company> <role>"
+        
+        company = args[0]
+        role = args[1]
+
+        # Check if the user has any jobs tracked
+        if user_id not in self.db or not self.db[user_id]["jobs"]:
+            return "You don't have any job applications to delete."
+
+        # Check if the given company and role are in the user's tracked jobs
+        if (
+            company not in self.db[user_id]["jobs"] or 
+            role not in self.db[user_id]["jobs"][company]
+        ):
+            return f"No record found for '{company}' with role '{role}'."
+
+        # Delete the role from the user's jobs
+        del self.db[user_id]["jobs"][company][role]
+
+        # If that company now has no more roles, delete the company entry too
+        if not self.db[user_id]["jobs"][company]:
+            del self.db[user_id]["jobs"][company]
+
+        self.save_database()
+
+        return f"Successfully deleted '{company}' ({role})."
+
 
     async def run(self, message: discord.Message):
         user_id = str(message.author.id)

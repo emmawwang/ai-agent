@@ -3,8 +3,29 @@
         "username": "anavib",
         "jobs": {
             "Google": {
-                "oa": "2025-02-27",
-                "superday": "2025-02-27"
+                "SWE": {
+                    "oa": "2025-02-27",
+                    "superday": "2025-02-27"
+                }
+            }
+        }
+    },
+    "437632798535450636": {
+        "username": "emmawang6961",
+        "jobs": {
+            "Oura": {
+                "Product Design": {
+                    "applied": "2025-01-12"
+                }
+            },
+            "Google": {
+                "SWE": {
+                    "applied": "2025-01-12",
+                    "oa": "2025-03-5"
+                },
+                "product-design-intern": {
+                    "applied": "2025-01-10"
+                }
             }
         }
     }

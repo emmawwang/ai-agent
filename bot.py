@@ -38,15 +38,18 @@ BOT_HELP_MESSAGE = """
 **pingpal Bot Commands**
 
 📋 **Track Your Applications**
-`!process company_name status [date]` - Add or update a job application
+`!process company_name role status [date]` - Add or update a job application
   • Status options: applied, oa, phone, superday, offer, rejected
   • Date format: YYYY-MM-DD (optional, defaults to today)
-  • Example: `!process Google applied 2025-02-15`
+  • Example: `!process Google product-design-intern applied 2025-02-15`
+`!delete company_name role` - Delete a job application
+  • Example: `!delete Google SWE-intern`
 
 📊 **View Your Applications**
 `!list` - List all your job applications
 `!upcoming` - Show upcoming interviews
 `!followups` - Show applications that need follow-up emails
+`!delete` - Delete an existing job application
 
 ❓ **Help**
 `!help` - Show this help message
