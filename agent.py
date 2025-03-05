@@ -20,6 +20,7 @@ Available commands:
 2. !list - List all your job applications
 3. !upcoming - Show upcoming interviews
 4. !followups - Show applications that need follow-up emails
+5. !delete - Delete an existing job application
 
 Respond in a friendly, encouraging tone. Always confirm actions you've taken.
 """
