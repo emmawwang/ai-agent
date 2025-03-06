@@ -1,53 +1,8 @@
 # CS 153 - Infrastructure at Scale AI Agent Starter Code
 
-Note that for Discord the terms Bot and App are interchangable. We will use App in this manual.
-
-## Discord App Framework Code
-
-This is the base framework for students to complete the CS 153 final project. Please follow the instructions to fork this repository into your own repository and make all of your additions there.
-
-## Discord App Setup Instructions
-
-Your group will be making your very own AI agent and import it into our CS153 server as a Discord App. This starter code provides the framework for a Discord App implemented in Python. Follow the instructions below.
-
-### Instructional Video
-We've put together a video going through the setup of this starter code, and explaining various pieces of it. We highly recommend giving it a watch!
-
-[![Image 1224x834 Small](https://github.com/user-attachments/assets/990c87bc-17f8-44a6-8c0b-c313a8a04693)](https://drive.google.com/file/d/1doJQYJjCHA0fuOQ8hP3mcmDRORq7E28v/view)
-
-### Cursor Tutorial
-We've put together a short tutorial on how to use the Cursor IDE for building your projects. Run Cmd(ctrl)-I to open the composer if it doesn't show up for you!
-
-[![Frame 11](https://github.com/user-attachments/assets/2a4442ca-4170-40e2-b7b7-e163ae450801)](https://drive.google.com/file/d/1XFs17kZvEUx2xFLVistcdDuHnGFXU93a/view?usp=drive_link)
-
-
 ### Join the Discord Server
 
 First, every member of the team should join the Discord server using the invite link on Ed.
-
-### Get your Role within the Server
-
-Role Options:
-
-`Student`: For enrolled students in the course.
-
-`Online-Student`: For students taking this course online.
-
-`Auditor`: For those auditing the course.
-
-`Collaborator`: For external collaborators or guests.
-
-How to Join Your Role:
-
-1. Send a Direct Message (DM) to the Admin Bot.
-2. Use the following command format: `.join <Role Name>`
-3. Replace `<Role Name>` with one of the options above (e.g., `.join Student`).
-
-How to Leave Your Role:
-
-1. Send a Direct Message (DM) to the Admin Bot.
-2. Use the following command format: `.leave <Role Name>`
-3. Replace `<Role Name>` with one of the options above (e.g., `.leave Student`).
 
 ### Creating/Joining Your Group Channel
 
@@ -135,21 +90,3 @@ After you have installed conda, close any open terminals you might have. Then op
     conda activate discord_bot
     
 This will install the required dependencies to start the project.
-
-## Guide To The Starter Code
-
-The starter code includes two files, `bot.py` and `agent.py`. Let's take a look at what this project already does.
-
-To do this, run `python3 bot.py` and leave it running in your terminal. Next, go into your team’s channel `Group-Name` and try typing any message. You should see the bot respond in the same channel. The default behavior of the bot is, that any time it sees a message (from a user), it sends that message to Mistral's API and sends back the response.
-
-Let's take a deeper look into how this is done. In the `bot.py` file, scroll to the `on_message` function. This function is called every time a message is sent in your channel. Observe how `agent.run()` is called on the message content, and how the result of that message call is sent back to the user.
-
-This agent is defined in the `agent.py` file. The `run()` function creates a simple LLM call with a system message defined at the top, and the user's message passed in. The response from the LLM is then returned.
-
-Check out this finalized [weather agent bot](https://github.com/CS-153/weather-agent-template/blob/main/agent.py) to see a more detailed example.
-
-## Troubleshooting
-
-### `Exception: .env not found`!
-
-If you’re seeing this error, it probably means that your terminal is not open in the right folder. Make sure that it is open inside the folder that contains `bot.py` and `.env`

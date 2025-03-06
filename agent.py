@@ -3,7 +3,6 @@ from mistralai import Mistral
 import discord
 import json
 import datetime
-import re
 from datetime import datetime, timedelta
 
 MISTRAL_MODEL = "mistral-large-latest"
@@ -76,6 +75,10 @@ class MistralAgent:
         
         company = args[0]
         role = args[1]
+        # Check if role is accidentally a status
+        valid_statuses = ["applied", "oa", "phone", "superday", "offer", "rejected"]
+        if role.lower() in valid_statuses:
+            return "Invalid role name. Please provide a proper role name (i.e. SWE, APM etc). "
         status = args[2].lower()
         
         # Validate status

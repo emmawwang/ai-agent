@@ -28,5 +28,22 @@
                 }
             }
         }
+    },
+    "734281646664318987": {
+        "username": "ishank",
+        "jobs": {
+            "scale": {
+                "research-intern": {
+                    "applied": "2025-02-12",
+                    "oa": "2025-02-18",
+                    "rejected": "2025-03-05"
+                }
+            },
+            "google": {
+                "SWE": {
+                    "applied": "2025-03-05"
+                }
+            }
+        }
     }
 }
