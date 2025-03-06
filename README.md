@@ -84,7 +84,7 @@ We'll be using Python, if you've got a good Python setup already, great! But mak
 After you have installed conda, close any open terminals you might have. Then open a terminal in the same folder as your `bot.py` file (If you haven’t used your terminal before, check out [this guide](https://www.macworld.com/article/2042378/master-the-command-line-navigating-files-and-folders.html)!). Once in, run the following command
 
 ## 1. Create an environment with dependencies specified in env.yml:
-    conda env create -f local_env.yml
+    conda env create -f environment.yml
 
 ## 2. Activate the new environment:
     conda activate discord_bot
