@@ -226,17 +226,24 @@ async def before_reminder_task():
 @bot.event
 async def on_message(message: discord.Message):
     """Handle incoming messages."""
-    # Don't delete this line! It's necessary for the bot to process commands.
-    await bot.process_commands(message)
-
     # Ignore messages from self or other bots to prevent infinite loops.
     if message.author.bot:
         return
-
-    # Process the message with the agent
-    #logger.info(f"Processing message from {message.author}: {message.content}")
+        
+    # Check if the message is a command
+    is_command = message.content.startswith(PREFIX)
     
+    # If it's a bot command handled by discord.py, process it and return
+    if is_command:
+        # Check specifically for commands that should be handled by discord.py
+        discord_commands = ["!insights", "!help"]
+        if any(message.content.startswith(cmd) for cmd in discord_commands):
+            await bot.process_commands(message)
+            return
+    
+    # For other messages (non-commands or commands meant for the agent)
     try:
+        # For commands handled by agent or natural language
         # Show typing indicator while processing
         async with message.channel.typing():
             response = await agent.run(message)

@@ -271,7 +271,11 @@ class MistralAgent:
         
         # Check if message is a command
         if message.content.startswith("!"):
-            return self.process_command(message.content, user_id, username)
+            result = self.process_command(message.content, user_id, username)
+            # If result is None, it means this command should be handled by Discord, not the agent
+            if result is None:
+                return ""
+            return result
         
         # If it's not a command, process it as a normal message for Mistral
         messages = [
