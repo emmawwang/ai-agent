@@ -1,0 +1,31 @@
+task_category,skill_type,skill_name,description,automation_level
+technical,programming,Full-Stack Development,Building web applications with React/Node.js
+technical,data,Python Data Science,Using pandas/scikit-learn for analytics
+technical,cloud,AWS Cloud Architecture,Designing scalable cloud infrastructure
+technical,ai,TensorFlow/PyTorch,Building and deploying ML models
+technical,security,DevSecOps,Implementing security in CI/CD pipelines
+strategic,management,Agile Project Management,Leading sprints and scrum teams
+strategic,business,Product Analytics,Using data for product decisions
+strategic,communication,API Documentation,Writing technical specifications
+strategic,design,Microservices Architecture,Designing distributed systems
+strategic,leadership,Engineering Team Lead,Managing technical teams
+analysis,research,Market Intelligence Tools,Using Bloomberg/Reuters
+analysis,metrics,A/B Testing,Designing and analyzing experiments
+analysis,reporting,Tableau/PowerBI,Creating data visualizations
+analysis,planning,OKR Framework,Setting measurable objectives
+analysis,risk,Risk Modeling,Using Monte Carlo simulations
+technical,ai_collaboration,AI System Design,Architecting and integrating AI solutions,high
+technical,ai_oversight,ML Model Monitoring,Quality control and bias detection in AI systems,high
+technical,automation_design,Workflow Automation,Designing and optimizing automated processes,high
+strategic,human_ai,AI-Human Collaboration,Managing hybrid teams of humans and AI,high
+strategic,innovation,Process Innovation,Redesigning workflows around AI capabilities,high
+strategic,governance,AI Governance,Establishing AI usage policies and ethics,high
+analysis,decision,Strategic Decision Making,Complex judgment calls using AI insights,medium
+analysis,risk_management,AI Risk Assessment,Evaluating and mitigating AI system risks,medium
+analysis,stakeholder,Stakeholder Management,Building trust with AI-impacted teams,medium
+creative,design_thinking,Human-Centered Design,Creating user-focused AI solutions,medium
+creative,problem_solving,Complex Problem Solving,Handling unique cases AI can't solve,medium
+creative,change_management,Digital Transformation,Leading teams through AI adoption,medium
+leadership,team_development,AI Team Leadership,Managing mixed human-AI teams,low
+leadership,strategy,AI Strategy Development,Planning AI integration roadmaps,low
+leadership,communication,Technical Translation,Explaining AI systems to stakeholders,low 
