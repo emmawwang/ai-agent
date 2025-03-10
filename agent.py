@@ -11,10 +11,10 @@ You are pingpal, a helpful assistant designed to help users track their job appl
 You can track job applications, update their status, and remind users about follow-up emails.
 
 Available commands:
-1. !process company_name status [date] - Add or update a job application
+1. !process company_name role status [date] - Add or update a job application
    - Status options: applied, oa (online assessment), phone, superday, offer, rejected
    - Date format: YYYY-MM-DD (optional, defaults to today)
-   - Example: !process Google applied 2025-02-15
+   - Example: !process Google SWE-intern applied 2025-02-15
 
 2. !list - List all your job applications
 3. !upcoming - Show upcoming interviews
@@ -73,8 +73,8 @@ class MistralAgent:
                 "Format: !process <company> <role> <status> [date]"
             )
         
-        company = args[0]
-        role = args[1]
+        company = args[0].lower()
+        role = args[1].lower()
         # Check if role is accidentally a status
         valid_statuses = ["applied", "oa", "phone", "superday", "offer", "rejected"]
         if role.lower() in valid_statuses:
@@ -114,22 +114,42 @@ class MistralAgent:
         return f"Updated {company} ({role}) to status '{status}' on {date}."
 
     def list_jobs(self, user_id):
-        """List all job applications for a user"""
+        """List all job applications for a user with consistent indentation:
+        Company
+        - Role:
+            • Applied: ...
+            • Oa: ...
+            etc.
+        """                                     
         if user_id not in self.db or not self.db[user_id]["jobs"]:
             return "You haven't tracked any job applications yet. Use !process to add one."
-        
+
         jobs = self.db[user_id]["jobs"]
-        response = "Your job applications:\n\n"
-        
+        username = self.db[user_id]["username"]
+        response = f"Job applications for user {username}:\n\n"
+
+        # Define a natural progression for statuses instead of alphabetical
+        STATUS_ORDER = ["applied", "oa", "phone", "superday", "offer", "rejected"]
+
         for company, roles_dict in jobs.items():
+            # Print the company name (bold in Discord)
             response += f"**{company}**\n"
+
+            # For each role, print one dash
             for role, statuses in roles_dict.items():
-                response += f"  - {role}:\n"
-                for status, date in sorted(statuses.items()):
-                    response += f"      • {status.capitalize()}: {date}\n"
-            response += "\n"
-        
+                response += f"- {role}:\n"
+
+                # Print statuses in the fixed pipeline order
+                for status in STATUS_ORDER:
+                    if status in statuses:
+                        date = statuses[status]
+                        # Indent each status with two spaces
+                        response += f"  • {status.capitalize()}: {date}\n"
+
+                response += "\n"  # Blank line between roles
+
         return response
+
 
     def show_upcoming(self, user_id):
         """Show upcoming interviews based on the latest status of each application"""
@@ -239,8 +259,8 @@ class MistralAgent:
         if len(args) < 2:
             return "Please provide both the company name and the role. Format: !delete <company> <role>"
         
-        company = args[0]
-        role = args[1]
+        company = args[0].lower()
+        role = args[1].lower()
 
         # Check if the user has any jobs tracked
         if user_id not in self.db or not self.db[user_id]["jobs"]:
