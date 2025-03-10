@@ -88,8 +88,8 @@ class MistralAgent:
                 "Format: !process <company> <role> <status> [date]"
             )
         
-        company = args[0]
-        role = args[1]
+        company = args[0].lower()
+        role = args[1].lower()
         # Check if role is accidentally a status
         valid_statuses = ["applied", "oa", "phone", "superday", "offer", "rejected"]
         if role.lower() in valid_statuses:
@@ -186,17 +186,22 @@ class MistralAgent:
             return "You haven't tracked any job applications yet. Use !process to add one."
             
         response = "Your job applications:\n\n"
-        
+        # Define a natural progression for statuses instead of alphabetical
+        STATUS_ORDER = ["applied", "oa", "phone", "superday", "offer", "rejected"]
+
         # Build response from the JSONB data
         for company, roles in jobs.items():
             response += f"**{company}**\n"
             for role, statuses in roles.items():
                 response += f"  - {role}:\n"
-                for status, date in sorted(statuses.items()):
-                    response += f"      • {status.capitalize()}: {date}\n"
+                for status in STATUS_ORDER:
+                    if status in statuses:
+                        date = statuses[status]
+                        response += f"  • {status.capitalize()}: {date}\n"
             response += "\n"
         
         return response
+
 
     def show_upcoming(self, user_id):
         """Show upcoming interviews based on the latest status of each application"""
@@ -333,8 +338,8 @@ class MistralAgent:
         if len(args) < 2:
             return "Please provide both the company name and the role. Format: !delete <company> <role>"
         
-        company = args[0]
-        role = args[1]
+        company = args[0].lower()
+        role = args[1].lower()
 
         # Get existing user record
         user_record = self.get_user_data(user_id)
