@@ -4,11 +4,9 @@ import os
 import requests
 import json
 import re
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
-from insights.task_processor import extract_tasks, preprocess_text, detect_industry
-from insights.config import ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE, HIGH_GROWTH_THRESHOLD, MODERATE_GROWTH_THRESHOLD
+from insights.config import BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE
 from sentence_transformers import SentenceTransformer
 import logging
 
@@ -302,7 +300,7 @@ class JobAnalyzer:
         match = re.search(pattern, text, re.IGNORECASE)
         return match.group(1).strip() if match else default
 
-def analyze_job_automation(job_url, task_mappings_file=ONET_TASK_MAPPINGS_FILE):
+def analyze_job_automation(job_url, is_url, task_mappings_file=ONET_TASK_MAPPINGS_FILE):
     """Wrapper function for job analysis"""
     logger.info(f"Starting job analysis for URL: {job_url}")
     

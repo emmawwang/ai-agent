@@ -2,13 +2,13 @@ import os
 import sys
 import discord
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from agent import MistralAgent
 from insights.job_analyzer import analyze_job_automation, format_results_for_discord
-from insights.config import ONET_TASK_MAPPINGS_FILE, ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE
+from insights.config import ONET_TASK_MAPPINGS_FILE
 
 PREFIX = "!"
 
@@ -289,8 +289,8 @@ async def on_message(message: discord.Message):
             response = await agent.run(message)
         
         # Split response if too long
-        if len(response) > 5000:
-            parts = [response[i:i+5000] for i in range(0, len(response), 5000)]
+        if len(response) > 2000:
+            parts = [response[i:i+2000] for i in range(0, len(response), 2000)]
             for part in parts:
                 await message.reply(part)
         else:
@@ -350,14 +350,14 @@ async def insights_command(ctx, *, content=""):
         return
         
     # Check if the content is a URL or text
-    is_url = content.strip().startswith("http://") or content.strip().startswith("https://")
+    is_url = content.strip().startswith("http://") or content.strip().startswith("https://") or content.strip().startswith("www.")
     
     # Send initial response
     await ctx.send("Analyzing job information... this may take a moment.")
     
     try:
         # Run the job analyzer
-        results = analyze_job_automation(content, ONET_TASK_MAPPINGS_FILE)
+        results = analyze_job_automation(content, is_url, ONET_TASK_MAPPINGS_FILE)
         
         # Format results using the formatter from new.py
         formatted_output = format_results_for_discord(results)
@@ -373,9 +373,6 @@ async def insights_command(ctx, *, content=""):
     except Exception as e:
         await ctx.send(f"Error analyzing job: {str(e)}")
         logger.error(f"Job insights error: {e}")
-
-
-
 
 
 # Add command line functionality

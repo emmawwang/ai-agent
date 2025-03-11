@@ -1,9 +1,8 @@
 import os
 from mistralai import Mistral
 import discord
-import json
 import datetime
-from datetime import datetime, timedelta
+from datetime import datetime
 from supabase import create_client
 
 MISTRAL_MODEL = "mistral-large-latest"
