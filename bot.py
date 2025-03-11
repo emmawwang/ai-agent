@@ -227,7 +227,7 @@ async def check_for_reminders():
                             threshold = followup_thresholds[latest_status]
                             
                             # Only remind for new follow-ups (exactly at threshold day)
-                            if days_since >= threshold:
+                            if days_since == threshold:
                                 followup_reminder += f"📧 **Follow-up Needed:** It's been {days_since} days since your {latest_status} for the {role} role at {company}. Consider sending a follow-up email.\n"
                 
                 # Send combined reminders if any exist
