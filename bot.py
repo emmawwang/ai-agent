@@ -265,6 +265,10 @@ async def on_message(message: discord.Message):
     # Ignore messages from self or other bots to prevent infinite loops.
     if message.author.bot:
         return
+    
+    # Ignore .clear command as it's meant for another bot
+    if message.content.strip() == ".clear":
+        return
         
     # Check if the message is a command
     is_command = message.content.startswith(PREFIX)
@@ -285,8 +289,8 @@ async def on_message(message: discord.Message):
             response = await agent.run(message)
         
         # Split response if too long
-        if len(response) > 2000:
-            parts = [response[i:i+2000] for i in range(0, len(response), 2000)]
+        if len(response) > 5000:
+            parts = [response[i:i+5000] for i in range(0, len(response), 5000)]
             for part in parts:
                 await message.reply(part)
         else:
