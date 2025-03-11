@@ -184,22 +184,23 @@ class MistralAgent:
             
         if not jobs:
             return "You haven't tracked any job applications yet. Use !process to add one."
-            
-        response = "Your job applications:\n\n"
+        
+        username = user_data.get("username", "Your")
+        response = f"**{username}'s job applications:**\n\n"
         # Define a natural progression for statuses instead of alphabetical
         STATUS_ORDER = ["applied", "oa", "phone", "superday", "offer", "rejected"]
-
+        CAPS_ROLES = ["apm", "swe", "ib", "mle", "pm", "ml", "ai", "hr", "it", "pe", "da", "qa", "ux", "ui", "cto", "cfo", "ceo", "vp", "tpm", "pmo", "cs", "sa", "de", "dba", "ds", "re", "am", "bd", "sm", "po"]
         # Build response from the JSONB data
         for company, roles in jobs.items():
-            response += f"**{company}**\n"
+            response += f"**{company.capitalize()}**"
             for role, statuses in roles.items():
-                response += f"  - {role}:\n"
+                response += f"\n    • {role.upper() if role.lower() in CAPS_ROLES else role}:\n"
                 for status in STATUS_ORDER:
                     if status in statuses:
                         date = statuses[status]
-                        response += f"  • {status.capitalize()}: {date}\n"
+                        response += f"      • {status.capitalize()}: {date}\n"
             response += "\n"
-        
+
         return response
 
 
