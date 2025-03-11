@@ -265,7 +265,10 @@ async def on_message(message: discord.Message):
     # Ignore messages from self or other bots to prevent infinite loops.
     if message.author.bot:
         return
-        
+    # Ignore .clear command as it's meant for another bot
+    if message.content.strip() == ".clear":
+        return
+    
     # Check if the message is a command
     is_command = message.content.startswith(PREFIX)
     
