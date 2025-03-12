@@ -4,11 +4,9 @@ import os
 import requests
 import json
 import re
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
-from insights.task_processor import extract_tasks, preprocess_text, detect_industry
-from insights.config import ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE, HIGH_GROWTH_THRESHOLD, MODERATE_GROWTH_THRESHOLD
+from insights.config import BLS_EMPLOYMENT_FILE, ONET_TASK_MAPPINGS_FILE
 from sentence_transformers import SentenceTransformer
 import logging
 
@@ -301,14 +299,186 @@ class JobAnalyzer:
         pattern = rf'{field}:?\s*([^\n]+)'
         match = re.search(pattern, text, re.IGNORECASE)
         return match.group(1).strip() if match else default
+    
+    def analyze_job_description(self, job_description):
+        """Analyze a job description text directly
+        
+        Parameters:
+        job_description (str): The text of the job description
+        
+        Returns:
+        dict: Results of the job analysis
+        """
+        try:
+            print("\n=== Starting Job Description Analysis ===")
+            
+            # 1. Extract job info from text instead of fetching from URL
+            job_info = self._parse_job_description(job_description)
+            
+            if 'error' in job_info:
+                return job_info
+                
+            if 'industry' not in job_info:
+                print("⚠️ No industry found in job info")
+                job_info['industry'] = 'Technology'  # Default fallback
+            
+            # 2. Extract tasks and analyze automation
+            tasks = self._extract_tasks(job_description)
+            print(f"Extracted {len(tasks)} tasks")
+            
+            automatable_tasks = self._analyze_automation(tasks)
+            print(f"Analyzed {len(automatable_tasks)} tasks for automation")
+            
+            # 3. Compile results
+            results = {
+                'company': job_info.get('company', 'Not specified'),
+                'industry': job_info.get('industry', 'Technology'),
+                'tasks': tasks,
+                'automation_analysis': automatable_tasks
+            }
+            
+            print("Analysis complete with keys:", results.keys())
+            return results
+            
+        except Exception as e:
+            print(f"Error in analysis: {str(e)}")
+            return {'error': f"Analysis failed: {str(e)}"}
+    
 
-def analyze_job_automation(job_url, task_mappings_file=ONET_TASK_MAPPINGS_FILE):
-    """Wrapper function for job analysis"""
-    logger.info(f"Starting job analysis for URL: {job_url}")
+    def _parse_job_description(self, description):
+        """Parse job description text to extract relevant information
+        
+        Parameters:
+        description (str): The text of the job description
+        
+        Returns:
+        dict: Extracted job information
+        """
+        try:
+            logger.info("Parsing job description text")
+            
+            # Use Perplexity to analyze the job description
+            prompt = f"""
+            Analyze this job description:
+            {description[:4000]}  # First 4000 chars to stay within token limits
+            
+            Extract EXACT tasks and responsibilities. Do not summarize.
+            
+            Format:
+            Company: [company name if mentioned, or "Not specified"]
+            Industry: [closest match from categories below]
+            Tasks:
+            - [COPY-PASTE exact task from the content above]
+            - [COPY-PASTE exact task from the content above]
+            - [COPY-PASTE exact task from the content above]
+            
+            Available industry categories:
+            - Computer and mathematical
+            - Healthcare practitioners and technical
+            - Management
+            - Business and financial operations
+            - Sales and related
+            - Education, training, and library
+            - Office and administrative support
+            - Architecture and engineering
+            - Arts, design, entertainment, sports, and media
+            - Life, physical, and social science
+            - Legal
+            - Community and social service
+            - Construction and extraction
+            - Installation, maintenance, and repair
+            - Production
+            - Transportation and material moving
+            - Farming, fishing, and forestry
+            - Protective service
+            - Personal care and service
+            - Food preparation and serving related
+            - Building and grounds cleaning and maintenance
+            """
+            
+            # Query Perplexity with the content
+            response = self._query_perplexity(prompt)
+            logger.info(f"Raw Perplexity response: {response[:500]}")
+            
+            # Parse the response
+            result = {
+                'description': description,  # Store original description
+                'company': self._extract_field(response, 'Company', 'Not specified'),
+                'industry': self._extract_field(response, 'Industry', 'Computer and mathematical'),
+                'tasks': self._extract_tasks(response)
+            }
+            
+            # Validate we got tasks
+            if not result['tasks']:
+                logger.warning("No tasks found in Perplexity response, trying direct extraction")
+                # Try to extract tasks directly from the description
+                direct_tasks = self._extract_tasks_from_text(description)
+                if direct_tasks:
+                    result['tasks'] = direct_tasks
+                    logger.info(f"Found {len(direct_tasks)} tasks directly from text")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error parsing job description: {str(e)}", exc_info=True)
+            return {'error': f"Failed to parse job description: {str(e)}"}
+
+    def _extract_tasks_from_text(self, text):
+        """Extract tasks directly from plain text description"""
+        try:
+            # Common patterns for task sections in job descriptions
+            patterns = [
+                r'responsibilities:?\s*((?:[-•*]\s*[^\n]+\n*)+)',
+                r'requirements:?\s*((?:[-•*]\s*[^\n]+\n*)+)',
+                r'what you\'ll do:?\s*((?:[-•*]\s*[^\n]+\n*)+)',
+                r'job duties:?\s*((?:[-•*]\s*[^\n]+\n*)+)',
+                r'essential functions:?\s*((?:[-•*]\s*[^\n]+\n*)+)',
+                r'key responsibilities:?\s*((?:[-•*]\s*[^\n]+\n*)+)'
+            ]
+            
+            tasks = []
+            for pattern in patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    # Extract bullet points
+                    bullet_points = re.findall(r'[-•*]\s*([^\n]+)', match)
+                    tasks.extend([t.strip() for t in bullet_points if len(t.strip()) > 10])
+            
+            # If no bullet points found, look for sentences that might be tasks
+            if not tasks:
+                sentences = re.split(r'[.!?]\s+', text)
+                potential_tasks = [s.strip() for s in sentences if len(s.strip()) > 10 
+                                and any(keyword in s.lower() for keyword in 
+                                    ['develop', 'create', 'manage', 'design', 'implement', 
+                                    'analyze', 'work', 'maintain', 'ensure', 'coordinate'])]
+                tasks = potential_tasks[:5]  # Take top 5 most likely task sentences
+            
+            return tasks[:5]  # Return top 5 most relevant tasks
+            
+        except Exception as e:
+            logger.error(f"Error extracting tasks from text: {str(e)}")
+            return []
+    
+def analyze_job_automation(job_input, is_url, task_mappings_file=ONET_TASK_MAPPINGS_FILE):
+    """Wrapper function for job analysis
+    
+    Parameters:
+    job_input (str): Either a URL to a job posting or the actual job description text
+    is_url (bool): Flag indicating whether job_input is a URL or a description
+    task_mappings_file (str): Path to the task mappings file
+    
+    Returns:
+    dict: Results of the job analysis
+    """
+    logger.info(f"Starting job analysis for {'URL' if is_url else 'text description'}")
     
     try:
         analyzer = JobAnalyzer(task_mappings_file)
-        results = analyzer.analyze_job(job_url)
+        
+        if is_url:
+            results = analyzer.analyze_job(job_input)
+        else:
+            results = analyzer.analyze_job_description(job_input)
         
         if 'error' in results:
             logger.warning(f"Analysis returned error: {results['error']}")
@@ -322,7 +492,7 @@ def analyze_job_automation(job_url, task_mappings_file=ONET_TASK_MAPPINGS_FILE):
     except Exception as e:
         logger.error(f"Error in analyze_job_automation: {str(e)}", exc_info=True)
         return {'error': f"Analysis failed: {str(e)}"}
-
+    
 def get_growth_thresholds(bls_data):
     """Calculate growth thresholds from BLS data"""
     try:

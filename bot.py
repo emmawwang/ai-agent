@@ -2,13 +2,13 @@ import os
 import sys
 import discord
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from agent import MistralAgent
 from insights.job_analyzer import analyze_job_automation, format_results_for_discord
-from insights.config import ONET_TASK_MAPPINGS_FILE, ECONOMIC_DATA_FILE, BLS_EMPLOYMENT_FILE
+from insights.config import ONET_TASK_MAPPINGS_FILE
 
 PREFIX = "!"
 
@@ -102,89 +102,127 @@ def simulate_discord():
 async def on_ready():
     """Called when the bot successfully connects to Discord."""
     logger.info(f"{bot.user} has connected to Discord!")
-    check_for_reminders.start()  # Start the reminder task
+
+    # Specify the Discord channel ID where you want to send the startup message 
+    ANNOUNCEMENT_CHANNEL_ID = 1344172991906451570  # Replace with your actual channel ID
+
+    # Find the channel where the bot should send the startup message
+    channel = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+
+    if channel:
+        await channel.send(
+            "🚀 **PingPal is now online!**\nHere are the available commands:\n\n"
+            "📋 **Track Your Applications**\n"
+            "`!process company_name role status [date]` - Track or update a job application\n"
+            "`!delete company_name role` - Delete a job application\n\n"
+            "📊 **View Your Applications**\n"
+            "`!list` - View all your tracked job applications\n"
+            "`!upcoming` - See upcoming interviews\n"
+            "`!followups` - View applications needing follow-up emails\n\n"
+            "🤖 **Job Analysis**\n"
+            "`!insights [job description or URL]` - Analyze a job posting for automation risk and get detailed job insights\n\n"
+            "❓ **Help**\n"
+            "`!help` - Show this help message\n\n"
+            "*The bot will also respond to natural language questions about your job search!*"
+        )
+    else:
+        logger.warning("⚠️ Announcement channel not found. Check ANNOUNCEMENT_CHANNEL_ID.")
+
+    check_for_reminders.start()
 
 
 @tasks.loop(hours=24)
 async def check_for_reminders():
     """Daily task to check and send reminders for follow-ups and upcoming interviews"""
     try:
-        # Ensure the database is loaded
-        agent.load_database()
-        
         # Get the current date
         today = datetime.now().date()
         
-        # For each user in the database
-        for user_id, user_data in agent.db.items():
+        # Get all users from Supabase
+        response = agent.supabase.table('job_tracker_data').select('*').execute()
+        if not response.data:
+            return  # No users found
+            
+        # Process each user
+        for user_record in response.data:
             try:
-                # Try to get the user object from Discord
-                user = await bot.fetch_user(int(user_id))
+                user_id = user_record['user_id']
+                user_data = user_record['data']
+                
+                if not user_data:
+                    continue  # Skip if no data
+                
+                # Extract jobs data from the proper location in the structure
+                jobs = user_data.get('jobs', {}) if isinstance(user_data, dict) and 'jobs' in user_data else user_data
+                
+                if not jobs:
+                    continue  # Skip if no jobs
+                
+                # Try to get the Discord user
+                try:
+                    user = await bot.fetch_user(int(user_id))
+                except discord.NotFound:
+                    logger.warning(f"User with ID {user_id} not found")
+                    continue
                 
                 # Check for upcoming interviews in the next 2 days
                 upcoming_reminder = ""
+                followup_reminder = ""
                 
-                for company, roles in user_data["jobs"].items():
+                # Process job data
+                for company, roles in jobs.items():
                     for role, statuses in roles.items():
                         # Skip if rejected or offered
                         if "rejected" in statuses or "offer" in statuses:
                             continue
                         
-                        # Find interview stages
+                        # Check for upcoming interviews
                         for stage, date_str in statuses.items():
                             if stage in ["oa", "phone", "superday"]:
-                                # Ensure date_str is a string
-                                if not isinstance(date_str, str):
-                                    logger.warning(f"Invalid date format for {user_id}, {company}, {role}, {stage}: {date_str}")
+                                try:
+                                    interview_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                                    days_until = (interview_date - today).days
+                                    
+                                    # If interview is in next 2 days
+                                    if 0 <= days_until <= 2:
+                                        reminder = f"📅 **Reminder:** You have a {stage} interview for the {role} role at {company} on {date_str}"
+                                        if days_until == 0:
+                                            reminder += " (Today)"
+                                        elif days_until == 1:
+                                            reminder += " (Tomorrow)"
+                                        else:
+                                            reminder += f" (In {days_until} days)"
+                                            
+                                        upcoming_reminder += reminder + "\n"
+                                except (ValueError, TypeError):
+                                    # Skip invalid dates
                                     continue
                                     
-                                interview_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                                days_until = (interview_date - today).days
-                                
-                                # If interview is tomorrow or in 2 days
-                                if 0 <= days_until <= 2:
-                                    reminder = f"📅 **Reminder:** You have a {stage} interview for the {role} role at {company} on {date_str}"
-                                    if days_until == 0:
-                                        reminder += " (Today)"
-                                    elif days_until == 1:
-                                        reminder += " (Tomorrow)"
-                                    else:
-                                        reminder += f" (In {days_until} days)"
-                                        
-                                    upcoming_reminder += reminder + "\n"
-                
-                # Check for needed follow-ups
-                followup_reminder = ""
-                followup_thresholds = {
-                    "applied": 14,  # 2 weeks after application
-                    "oa": 7,        # 1 week after online assessment
-                    "phone": 7,     # 1 week after phone interview
-                    "superday": 7   # 1 week after superday
-                }
-                
-                for company, roles in user_data["jobs"].items():
-                    for role, statuses in roles.items():
-                        # Skip if rejected or offered
-                        if "rejected" in statuses or "offer" in statuses:
-                            continue
-                            
+                        # Check for needed follow-ups
                         # Get the latest status
                         latest_status = None
                         latest_date = None
                         
                         for status, date_str in statuses.items():
-                            # Ensure date_str is a string
-                            if not isinstance(date_str, str):
-                                logger.warning(f"Invalid date format for {user_id}, {company}, {role}, {status}: {date_str}")
+                            try:
+                                status_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                                if latest_date is None or status_date > latest_date:
+                                    latest_status = status
+                                    latest_date = status_date
+                            except (ValueError, TypeError):
+                                # Skip invalid dates
                                 continue
-                                
-                            status_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                            if latest_date is None or status_date > latest_date:
-                                latest_status = status
-                                latest_date = status_date
+                        
+                        # Define follow-up thresholds
+                        followup_thresholds = {
+                            "applied": 14,  # 2 weeks after application
+                            "oa": 7,        # 1 week after online assessment
+                            "phone": 7,     # 1 week after phone interview
+                            "superday": 7   # 1 week after superday
+                        }
                         
                         # If the latest action was a while ago, suggest follow-up
-                        if latest_status in followup_thresholds:
+                        if latest_status in followup_thresholds and latest_date:
                             days_since = (today - latest_date).days
                             threshold = followup_thresholds[latest_status]
                             
@@ -208,10 +246,8 @@ async def check_for_reminders():
                     except Exception as e:
                         logger.error(f"Error sending reminder to {user.name}: {e}")
                         
-            except discord.NotFound:
-                logger.warning(f"User with ID {user_id} not found")
             except Exception as e:
-                logger.error(f"Error processing reminders for user {user_id}: {e}")
+                logger.error(f"Error processing reminders for user record: {e}")
                 
     except Exception as e:
         logger.error(f"Error in reminder task: {e}")
@@ -229,7 +265,11 @@ async def on_message(message: discord.Message):
     # Ignore messages from self or other bots to prevent infinite loops.
     if message.author.bot:
         return
-        
+    
+    # Ignore .clear command as it's meant for another bot
+    if message.content.strip() == ".clear":
+        return
+    
     # Check if the message is a command
     is_command = message.content.startswith(PREFIX)
     
@@ -310,14 +350,14 @@ async def insights_command(ctx, *, content=""):
         return
         
     # Check if the content is a URL or text
-    is_url = content.strip().startswith("http://") or content.strip().startswith("https://")
+    is_url = content.strip().startswith("http://") or content.strip().startswith("https://") or content.strip().startswith("www.")
     
     # Send initial response
     await ctx.send("Analyzing job information... this may take a moment.")
     
     try:
         # Run the job analyzer
-        results = analyze_job_automation(content, ONET_TASK_MAPPINGS_FILE)
+        results = analyze_job_automation(content, is_url, ONET_TASK_MAPPINGS_FILE)
         
         # Format results using the formatter from new.py
         formatted_output = format_results_for_discord(results)
@@ -333,9 +373,6 @@ async def insights_command(ctx, *, content=""):
     except Exception as e:
         await ctx.send(f"Error analyzing job: {str(e)}")
         logger.error(f"Job insights error: {e}")
-
-
-
 
 
 # Add command line functionality
